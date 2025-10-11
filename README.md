@@ -11,21 +11,25 @@ In practice, DARWIN would certainly face time and computation bottlenecks if sca
 - Interactive window for receiving design changes, library imports, dataset changes, and additional scripts requests from the model during training.
 
 ## Setup
-```# API keys, add to ~/.bashrc
+```
+# API keys, add to ~/.bashrc
 export OPENAI_API_KEY='...
 ```
 
-```# Verify that Docker is properly configured in your environment.
+```
+# Verify that Docker is properly configured in your environment.
 docker build -t my-app -f DOCKERFILE .
 ```
 
-```# Install dependencies
+```
+# Install dependencies
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-```# Clone SWE-bench
+```
+# Clone SWE-bench
 cd swe_bench
 git clone https://github.com/princeton-nlp/SWE-bench.git
 cd SWE-bench
