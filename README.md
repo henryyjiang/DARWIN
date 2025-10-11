@@ -11,33 +11,33 @@ In practice, DARWIN would certainly face time and computation bottlenecks if sca
 - Interactive window for receiving design changes, library imports, dataset changes, and additional scripts requests from the model during training.
 
 ## Setup
-'''# API keys, add to ~/.bashrc
+```# API keys, add to ~/.bashrc
 export OPENAI_API_KEY='...
-'''
+```
 
-'''# Verify that Docker is properly configured in your environment.
+```# Verify that Docker is properly configured in your environment.
 docker build -t my-app -f DOCKERFILE .
-'''
+```
 
-'''# Install dependencies
+```# Install dependencies
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
-'''
+```
 
-'''# Clone SWE-bench
+```# Clone SWE-bench
 cd swe_bench
 git clone https://github.com/princeton-nlp/SWE-bench.git
 cd SWE-bench
 git checkout dc4c087c2b9e4cefebf2e3d201d27e36
 pip install -e .
 cd ../../
-'''
+```
 
 ## Running Main Controller:
-'''
+```
 python main/main_controller.py
-'''
+```
 
 ## Acknowledgements:
 Credit goes to Andrej Karpathy for the amazing nanoGPT framework. Additional inspiration was taken from great works like Darwin Gödel Machine, Jenny Zhang et. al., and EvoAgentX by Wang et. al.
