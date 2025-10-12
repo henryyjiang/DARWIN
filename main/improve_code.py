@@ -6,7 +6,8 @@ import traceback
 import subprocess
 import tiktoken
 import random
-
+from openai import OpenAI
+from requests_and_memory import save_to_memory
 
 MAX_INPUT_CHARS = 30000
 
@@ -25,7 +26,7 @@ def process_file(model_file, model_dir, backend, MAX_INPUT_TOKENS=8000, MAX_OUTP
     input_tokens = enc.encode(orig_code)
 
     if len(input_tokens) > MAX_INPUT_TOKENS:
-        print(f"[!] ERROR: Input file '{model_file}' is too large ({len(input_tokens)} tokens, limit {MAX_INPUT_TOKENS}). Skipping.")
+        print(f"ERROR: Input file '{model_file}' is too large ({len(input_tokens)} tokens, limit {MAX_INPUT_TOKENS}). Skipping.")
         return None, {
             "error": "input_too_large",
             "input_tokens": len(input_tokens),
@@ -34,7 +35,7 @@ def process_file(model_file, model_dir, backend, MAX_INPUT_TOKENS=8000, MAX_OUTP
         }
 
     # Step 3: Prompting
-    prompt = prompt_template(orig_code, False)
+    prompt = prompt_template(orig_code, False, model_file)
 
     timestamp = int(time.time())
     meta = {
@@ -59,7 +60,7 @@ def process_file(model_file, model_dir, backend, MAX_INPUT_TOKENS=8000, MAX_OUTP
                 sample_script=os.path.join(model_dir, model_file)
             )
     except Exception as e:
-        print(f"[!] Generation failed for {model_file}: {e}")
+        print(f"Generation failed for {model_file}: {e}")
         traceback.print_exc()
         meta["error"] = str(e)
         return None, meta
@@ -75,10 +76,15 @@ def process_file(model_file, model_dir, backend, MAX_INPUT_TOKENS=8000, MAX_OUTP
     out_len = len(output_tokens)
 
     if out_len > MAX_OUTPUT_TOKENS:
-        print(f"[!] ERROR: Output for '{model_file}' exceeds {MAX_OUTPUT_TOKENS} tokens ({out_len}). Skipping save.")
+        print(f"ERROR: Output for '{model_file}' exceeds {MAX_OUTPUT_TOKENS} tokens ({out_len}). Skipping save.")
         meta["error"] = "output_too_large"
         meta["output_tokens"] = out_len
         return None, meta
+
+    print("Processed", model_file)
+
+    summary = summarize_diff(orig_code, improved_code)
+    save_to_memory(model_file, summary, meta)
 
     meta["output_tokens"] = out_len
     return improved_code, meta
@@ -99,7 +105,7 @@ def process_file_local(model_file, model_dir, backend_dir, MAX_INPUT_TOKENS=8000
     token_len = len(input_tokens)
 
     if token_len > MAX_INPUT_TOKENS:
-        print(f"[!] ERROR: Input file '{model_file}' is too large ({token_len} tokens, limit {MAX_INPUT_TOKENS}). Skipping.")
+        print(f"ERROR: Input file '{model_file}' is too large ({token_len} tokens, limit {MAX_INPUT_TOKENS}). Skipping.")
         return None, {
             "error": "input_too_large",
             "input_tokens": token_len,
@@ -108,7 +114,7 @@ def process_file_local(model_file, model_dir, backend_dir, MAX_INPUT_TOKENS=8000
         }
 
     # Step 3: Prompting
-    prompt = prompt_template(orig_code, False)
+    prompt = prompt_template(orig_code, False, model_file)
 
     timestamp = int(time.time())
     meta = {
@@ -125,7 +131,7 @@ def process_file_local(model_file, model_dir, backend_dir, MAX_INPUT_TOKENS=8000
             sample_script=os.path.join(model_dir, model_file, backend_dir)
         )
     except Exception as e:
-        print(f"[!] Generation failed for {model_file}: {e}")
+        print(f"Generation failed for {model_file}: {e}")
         traceback.print_exc()
         meta["error"] = str(e)
         return None, meta
@@ -141,13 +147,30 @@ def process_file_local(model_file, model_dir, backend_dir, MAX_INPUT_TOKENS=8000
     out_len = len(output_tokens)
 
     if out_len > MAX_OUTPUT_TOKENS:
-        print(f"[!] ERROR: Output for '{model_file}' exceeds {MAX_OUTPUT_TOKENS} tokens ({out_len}). Skipping save.")
+        print(f"Output for '{model_file}' exceeds {MAX_OUTPUT_TOKENS} tokens ({out_len}). Skipping save.")
         meta["error"] = "output_too_large"
         meta["output_tokens"] = out_len
         return None, meta
 
     meta["output_tokens"] = out_len
     return improved_code, meta
+
+
+def summarize_diff(orig_code: str, improved_code: str, model_name="gpt-4o-mini"):
+    prompt = f"""
+You are a code diff summarizer. Compare the two code snippets below and describe the main *changes and improvements* in concise bullet points.
+Focus on algorithmic, efficiency, or stability differences — not formatting.
+
+# ORIGINAL CODE
+{orig_code}
+
+# IMPROVED CODE
+{improved_code}
+
+# SUMMARY OF CHANGES
+"""
+    response = openai_completion(prompt, model_name=model_name, max_tokens=500)
+    return response.strip()
 
 
 def read_source(file_path):
@@ -206,8 +229,7 @@ def truncate_text(s: str, max_chars: int) -> (str, bool):
     truncated = head + "\n\n# ...TRUNCATED... \n\n" + tail
     return truncated, True
 
-
-def prompt_template(original_code: str, truncated_flag: bool):
+def prompt_template(original_code: str, truncated_flag: bool, model_file: str, project_root: str = None,):
     trunc_note = ""
     if truncated_flag:
         trunc_note = (
@@ -215,9 +237,22 @@ def prompt_template(original_code: str, truncated_flag: bool):
             "Improve only the visible part.\n"
         )
 
+    suggestions_text = ""
+    if project_root:
+        suggestions_path = os.path.join(project_root, "suggestions_for_model.txt")
+        if os.path.exists(suggestions_path):
+            with open(suggestions_path, "r", encoding="utf-8") as f:
+                suggestions_text = f.read().strip()
+            if suggestions_text:
+                suggestions_text = (
+                    f"# SUPERVISOR FEEDBACK — suggestions_for_model.txt\n"
+                    f"# These manual updates were applied by the human supervisor.\n"
+                    f"{suggestions_text}\n\n"
+                )
+
     return f"""
 You are a code optimizer specializing in deep learning and PyTorch.
-Make small, local improvements to the following Python code fragment.
+Make small, local improvements to {model_file} by inserting or deleting code to the following Python code fragment.
 
 Focus strictly on:
 - GPU/memory efficiency
@@ -233,6 +268,7 @@ Do NOT:
 Output only valid Python source code.
 No text or comments outside the code itself.
 
+{suggestions_text}
 # BEGIN ORIGINAL
 {original_code}
 # END ORIGINAL
@@ -241,10 +277,6 @@ No text or comments outside the code itself.
 {trunc_note}
 """
 
-try:
-    from openai import OpenAI
-except Exception:
-    OpenAI = None
 
 
 def openai_completion(prompt: str, model_name: str = "gpt-4o-mini", temperature: float = 0.2, max_tokens: int = 4000):
@@ -307,7 +339,7 @@ def use_local_model_completion(
         return generated
 
     except subprocess.CalledProcessError as e:
-        print(f"[x] Error running local model ({backend_dir}):\n{e.stderr}")
+        print(f"Error running local model ({backend_dir}):\n{e.stderr}")
         return None
 
 
@@ -325,18 +357,6 @@ def save_output(code: str, out_code_file: str):
 
 
 def improve_file_chunks(model_dir: str, model_filename: str, improved_filename: str, backend: str = "openai", modify_prob: float = 0.4):
-    """
-    Improves a Python model/training file by chunking it (by class/function)
-    and generating improved code for each chunk.
-
-    Args:
-        model_dir: Path to the directory containing the model file.
-        model_filename: Name of the file to process.
-        backend: "openai" or "local". If None, auto-selects based on environment.
-
-    Returns:
-        Tuple of (final_code: str or None, meta: dict)
-    """
     model_file = os.path.join(model_dir, model_filename)
     if not os.path.exists(model_file):
         error_msg = f"Error: {model_filename} not found in {model_dir}."
@@ -373,11 +393,10 @@ def improve_file_chunks(model_dir: str, model_filename: str, improved_filename: 
         if idx > 1:
             context_summary = "\n# Previously improved sections:\n" + "\n".join(prev_function_names[-3:]) + "\n"
 
-        # Module-level imports/constants
         module_chunk = next((body for h, body in chunks if h == "module_level"), None)
         import_summary = f"\n# Module-level imports and constants:\n{module_chunk}\n" if module_chunk else ""
 
-        prompt = context_summary + import_summary + prompt_template(chunk_trunc, was_truncated)
+        prompt = context_summary + import_summary + prompt_template(chunk_trunc, was_truncated, model_filename)
 
         try:
             if backend == "openai":
