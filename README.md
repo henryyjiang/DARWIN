@@ -3,12 +3,15 @@ DARWIN is an agentic evolutionary AI designed for repeated improvements through 
 
 In practice, DARWIN would certainly face time and computation bottlenecks if scaled to large models on the scale of GPT-2 and above. However, the agentic nature of the training makes it uniquely suited to volunteer or grid computing, dividing calculation of local subgradients between volunteers and averaging them for the models trained in each generation. If applied to a product it could be offered as a chatbot service as an executable, using a small portion of GPU or CPU compute power to calculate gradients for training.
 
-#### Additional features to be added soon:
+#### Additional implemented features (mostly Open AI API only for now):
 - Parallelization
-- SWE-bench performance metrics
 - Memory storage of past iteration modifications
 - Agentic troubleshooting of errors when models fail
-- Interactive window for receiving design changes, library imports, dataset changes, and additional scripts requests from the model during training.
+- model_requests.txt for receiving file structure change, library imports, dataset changes, and additional scripts requests from the model during training
+- suggestions_for_model.txt informs models on manual changes and allows users to offer suggestions for direction to take in improving code.
+
+#### To be implemented: 
+- SWE-bench performance metrics
 
 ## Setup
 ```
@@ -45,4 +48,5 @@ python main/main_controller.py
 
 ## Acknowledgements:
 Credit goes to Andrej Karpathy for the amazing nanoGPT framework. Additional inspiration was taken from great works like Darwin Gödel Machine, Jenny Zhang et. al., and EvoAgentX by Wang et. al.
+
 
