@@ -1,9 +1,11 @@
 # DARWIN
-DARWIN is an agentic evolutionary AI designed for repeated improvements through being prompted to modify its own source code to improve performance. It utilizes a genetic algorithm-like selection criteria, where a set of parents are prompted to modify the training code of one another to ideally create the next generation of more efficient and higher performance models. Currently, the project is only a proof of concept, utilizing OpenAI for backend and nanoGPT by Andrej Karpathy as the example model. Due to the nature of the agent autonomously modifying the contents of the project directory, it is highly recommended to set up a Docker environment. Users are advised to be aware of the safety risks of unregulated model generated code execution. 
 
-In practice, DARWIN would certainly face time and computation bottlenecks if scaled to large models on the scale of GPT-2 and above. However, the agentic nature of the training makes it uniquely suited to volunteer or grid computing, dividing calculation of local subgradients between volunteers and averaging them for the models trained in each generation. If applied to a product it could be offered as a chatbot service as an executable, using a small portion of GPU or CPU compute power to calculate gradients for training.
+### How it works
+DARWIN is an agentic evolutionary AI designed for repeated improvements through being prompted to modify its own source code to improve performance. 
+It utilizes a genetic algorithm-like selection criteria, where a set of parents are prompted to modify the training code of one another to ideally create the next generation of more efficient and higher performance models. This substitutes mutation for this setup.
+Currently, the project is only a proof of concept, utilizing OpenAI/Claude API for backend and nanoGPT by Andrej Karpathy as the example model. Due to the nature of the agent autonomously modifying the contents of the project directory, it is a necessity to set up a Docker environment. Users are advised to be aware of the safety risks of unregulated model generated code execution.
 
-#### Additional implemented features (mostly Open AI API only for now):
+#### Additional implemented features:
 - Parallelization
 - Memory storage of past iteration modifications
 - Agentic troubleshooting of errors when models fail
@@ -12,6 +14,9 @@ In practice, DARWIN would certainly face time and computation bottlenecks if sca
 
 #### To be implemented: 
 - SWE-bench performance metrics
+
+### Conclusions
+In practice, DARWIN would certainly face time and computation bottlenecks if scaled to large models on the scale of GPT-2 and above. However, the agentic nature of the training makes it uniquely suited to volunteer or grid computing, dividing calculation of local subgradients between volunteers and averaging them for the models trained in each generation. If applied to a product it could be offered as a chatbot service as an executable, using a small portion of GPU or CPU compute power to calculate gradients for training.
 
 ## Setup
 ```
