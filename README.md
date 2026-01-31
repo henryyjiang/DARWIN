@@ -1,9 +1,34 @@
 # DARWIN
 
-### How it works
-DARWIN is an agentic evolutionary AI designed for repeated improvements through being prompted to modify its own source code to improve performance. 
-It utilizes a genetic algorithm-like selection criteria, where a set of parents are prompted to modify the training code of one another to ideally create the next generation of more efficient and higher performance models. This substitutes mutation for this setup.
-Currently, the project is only a proof of concept, utilizing OpenAI/Claude API for backend and nanoGPT by Andrej Karpathy as the example model. Due to the nature of the agent autonomously modifying the contents of the project directory, it is a necessity to set up a Docker environment. Users are advised to be aware of the safety risks of unregulated model generated code execution.
+### Abstract
+DARWIN is an evolutionary GPT model, utiliz-
+ing a genetic-algorithm like optimization struc-
+ture with several independent GPT agents be-
+ing trained individually unique training code.
+Each iteration, the GPT models are prompted
+to modify the training code of one another in
+an attempt to improve their performance in a
+mutation-like manner, and the best GPT agents
+are then benchmarked and selected for the next
+iteration by genetic algorithm. For demonstra-
+tion purposes and due to budget and time con-
+straints, OpenAI API is used to prompt training
+code improvements and the nanoGPT frame-
+work is used as the training code. DARWIN also
+utilizes persistent JSON-based memory files to
+track previous reasoning and changes to code
+to correlate with improvemenst to model per-
+formance. and a bidirectional interface for
+HITL intervention allowing the model to request
+upgrades such as additional datasets, training
+scripts, and restructuring of file hierarchies.
+In experiments, DARWIN achieved a 20 per-
+cent improvement in model FLOPS utilization
+(MFU) and a 15 percent improvement to per-
+plexity in 5 iterations of training over baseline
+configurations, demonstrating promising capa-
+bilities as a foundation for scaling evolutionary
+GPT training.
 
 #### Additional implemented features:
 - Parallelization
