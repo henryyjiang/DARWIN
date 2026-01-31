@@ -77,6 +77,6 @@ python main/main_controller.py
 ```
 
 ## Acknowledgements:
-Credit goes to Andrej Karpathy for the amazing nanoGPT framework. Additional inspiration was taken from great works like Darwin Gödel Machine, Jenny Zhang et. al., and EvoAgentX by Wang et. al.
+Credit goes to Andrej Karpathy for the nanoGPT framework. Additional inspiration was taken from works Darwin Gödel Machine, Jenny Zhang et. al., and EvoAgentX by Wang et. al.
 
 
