@@ -5,7 +5,7 @@ DARWIN is an evolutionary GPT model, utilizing a genetic-algorithm like optimiza
 For demonstration purposes and due to budget and time constraints, OpenAI API is used to prompt training code improvements and the nanoGPT framework is used as the training code. DARWIN also utilizes persistent JSON-based memory files to track previous reasoning and changes to code to correlate with improvemenst to model performance. and a bidirectional interface for HITL intervention allowing the model to request upgrades such as additional datasets, training scripts, and restructuring of file hierarchies. In experiments, DARWIN achieved a 1.26 percent improvement in model FLOPS utilization (MFU) and a 2.07 percent improvement to perplexity in 5 iterations of training over baseline configurations, demonstrating promising capabilities as a foundation for scaling evolutionary GPT training.
 
 ### Paper
-To be updated...
+[Link](http://arxiv.org/abs/2602.05848)
 
 ## Setup
 ```
