@@ -12,6 +12,6 @@ Layering:
 - `server.py` — thin FastMCP wiring that registers the logic as MCP tools.
 """
 
-from darwin.mcp.tools import MemoryToolset
+from darwin.mcp.tools import MemoryToolset, AgentToolset
 
-__all__ = ["MemoryToolset"]
+__all__ = ["MemoryToolset", "AgentToolset"]

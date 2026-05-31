@@ -20,11 +20,20 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 from darwin.memory import MemoryStore
-from darwin.mcp.tools import MemoryToolset
+from darwin.mcp.tools import MemoryToolset, AgentToolset
 
 
-def create_server(store: MemoryStore, name: str = "darwin-mcp") -> FastMCP:
-    """Build a FastMCP server exposing the memory tool group over `store`."""
+def create_server(
+    store: MemoryStore,
+    agent_context: Any | None = None,
+    name: str = "darwin-mcp",
+) -> FastMCP:
+    """Build a FastMCP server exposing the memory tool group over `store`.
+
+    When `agent_context` (a `MutationContext`) is supplied — i.e. the server is attached to a
+    live mutation window — the agent's `smoke.run` and `finalize` tools (§9.3) are also
+    registered, bound to that offspring's checkpointer.
+    """
     server = FastMCP(name)
     tools = MemoryToolset(store)
 
@@ -73,6 +82,18 @@ def create_server(store: MemoryStore, name: str = "darwin-mcp") -> FastMCP:
             datasets_used=datasets_used,
             papers_cited=papers_cited,
         )
+
+    if agent_context is not None:
+        agent_tools = AgentToolset(agent_context)
+        server.darwin_agent_tools = agent_tools  # exposed so the controller can read .finalized
+
+        @server.tool(name="smoke_run", description="Run the read-only smoke test on the current genome. A pass auto-commits a green checkpoint. Returns pass/fail, exit code, and the tail of the log.")
+        def smoke_run(summary: str = "smoke checkpoint") -> dict[str, Any]:
+            return agent_tools.smoke_run(summary)
+
+        @server.tool(name="finalize", description="Declare convergence to end your mutation window early once your code is green and your memory file is written.")
+        def finalize() -> dict[str, Any]:
+            return agent_tools.finalize()
 
     return server
 

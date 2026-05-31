@@ -20,9 +20,12 @@ Invariants enforced at this boundary (§7.2 / §7.3):
 from __future__ import annotations
 
 from dataclasses import asdict
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from darwin.memory import IterationMemory, MemoryStore, MemoryValidationError
+
+if TYPE_CHECKING:
+    from darwin.mutation_agent.backend import MutationContext
 
 
 class MemoryToolset:
@@ -95,3 +98,41 @@ class MemoryToolset:
             "iteration": iteration,
             "path": str(path),
         }
+
+
+class AgentToolset:
+    """Mutation-window tools bound to one offspring's context (ARCHITECTURE.md §9.3).
+
+    These are the agent's *only* eval-like / control tools:
+    - `smoke.run`  — run the read-only smoke test (§4.4.1); a pass auto-commits a green
+      checkpoint (§4.4). There is deliberately **no** agent-callable scored-benchmark tool —
+      scored benchmarking is controller-only and post-finetune (§6.2), so agents cannot probe
+      the held-out eval.
+    - `finalize`   — the agent self-declares convergence to end its window early (§4.3); the
+      controller observes the flag.
+    """
+
+    def __init__(self, ctx: "MutationContext"):
+        self._ctx = ctx
+        self._finalized = False
+
+    def smoke_run(self, summary: str = "smoke checkpoint") -> dict[str, Any]:
+        result = self._ctx.run_smoke()
+        commit = None
+        if result.passed:
+            commit = self._ctx.checkpointer.commit_green(summary)
+        return {
+            "passed": result.passed,
+            "exit_code": result.exit_code,
+            "committed": commit is not None,
+            "commit": commit,
+            "log": result.log[-4000:],
+        }
+
+    def finalize(self) -> dict[str, Any]:
+        self._finalized = True
+        return {"ok": True, "finalized": True}
+
+    @property
+    def finalized(self) -> bool:
+        return self._finalized

@@ -849,11 +849,30 @@ and cross-platform.
   structured outputs for the four sections, prompt caching on the system prompt, streaming),
   plus `run_global_memory_pass` (gather → synthesize → write) as the sole sanctioned global
   writer.
-- ⏳ **Not yet built:** the MCP `paper.*`, `data.*`, `smoke.run`, `cost.*`, and `finalize`
-  tools (each waits on its backing subsystem — HF/arXiv whitelists, the §4.4.1 smoke-test
-  harness, the cost ledger, and the agent loop respectively).
+- ⏳ **Not yet built:** the MCP `paper.*`, `data.*`, and `cost.*` tools (each waits on its
+  backing subsystem — HF/arXiv whitelists and the cost ledger). (`smoke.run` + `finalize`
+  landed with Phase 2.)
 
-**Phases 2–7 — not started.**
+**Phase 2 — backend-agnostic core complete; live containerized run deferred.**
+- ✅ The §4.2 lifecycle as a backend-agnostic core in `darwin/mutation_agent/`:
+  `smoke.SmokeTest` (generic §4.4.1 runner; exit 0 == green), `checkpoint.GitCheckpointer`
+  (offspring branch, `darwin-green:` commits + moving `last-green` tag, revert, **zero-green
+  fallback to the clone of S**, §4.3/§4.4), `deadline.DeadlineManager` (soft/hard/kill phases,
+  §4.3), the structured `directive` (ORIENT→HYPOTHESIZE→IMPLEMENT→VALIDATE→REFLECT, §4.8), the
+  `MutationContext`/`MutationBackend`/`MutationResult` contract, and `run_mutation_window` —
+  which guarantees an **always-green final genome** regardless of how the session ended.
+- ✅ Agent-facing MCP tools `smoke.run` + `finalize` (§9.3), registered on `darwin-mcp` when a
+  mutation context is attached, bound to the offspring's checkpointer.
+- ✅ `claude_backend.ClaudeMutationBackend` (§4.5): `bypassPermissions`, wall-clock-driven
+  deadline-nudge/FINALIZE injection, transcript persistence. Option-building + injection policy
+  are pure/tested; per §8.3 the web tools are excluded (web is MCP `paper.*`/`data.*` only).
+- ✅ Verified end-to-end with a scripted fake backend on a real Git repo + trivial genome
+  (green path → final == last-green; zero-green path → fallback to clone + `mutation_failed`).
+- ⏳ **Deferred (needs infra):** the *live* multi-hour run — Docker `darwin-agent` container +
+  `claude-agent-sdk` (optional `agent` extra) + the API. The §4.4.1 finetune-specific smoke
+  harness (real train step) lands with Phase 3; today's runner is the generic command-based one.
+
+**Phases 3–7 — not started.**
 
 **Invariants already enforced in code:** only the controller patches post-benchmark fields
 (§7.2); there is no agent-facing global-memory write path (§7.3); the global-memory pass is
