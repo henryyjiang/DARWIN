@@ -810,7 +810,7 @@ Context a new session needs that isn't obvious from the repo alone:
 
 **Tooling.** The project standardizes on **`uv`** (the Windows host has no bare `python`; uv
 manages CPython 3.14.4). Layout/deps in `pyproject.toml`. Run the suite with:
-`uv run --python 3.14 --extra dev python -m pytest -q` — **138 tests passing**.
+`uv run --python 3.14 --extra dev python -m pytest -q` — **160 tests passing**.
 
 **Code layout (actual).** All Python lives under a single importable `darwin/` package
 (`darwin.config`, `darwin.controller`, `darwin.mutation_agent`, `darwin.finetune`,
@@ -924,7 +924,30 @@ importable and cross-platform.
   full infra-failure re-provision/retry in the loop is treated as no-score for now (Phase 7
   hardening).
 
-**Phases 5–7 — not started.**
+**Phase 5 — local-model backend cores complete; live vLLM/OpenHands run deferred.**
+- ✅ **OpenAI-tool shim** (`darwin/mutation_agent/openai_tool_shim.py`, §9.3): translates MCP
+  tool schemas → OpenAI `tools=[...]` function specs, parses a function-call, dispatches to an
+  injected `invoke` callable, and wraps the result as a `role:"tool"` message (unknown-tool /
+  invoker errors surface in the message rather than killing the loop). Transport-free, pure.
+- ✅ **vLLM serving** (`vllm_serving.py`, §4.6): `VLLMServeConfig` + `build_serve_command` (base
+  model, `--api-key`, `--enable-auto-tool-choice`/`--tool-call-parser`, dynamic LoRA via
+  `--enable-lora --lora-modules` or a pre-merged model, `base_url`); `VLLMServer` launcher
+  scaffolded (GPU + `vllm` needed → deferred).
+- ✅ **`LocalMutationBackend`** (`local_backend.py`, §4.6): implements the §4.2
+  `MutationBackend.run` contract driving the population model as mutator via the **same**
+  directive + `darwin-mcp` tools as the Claude backend (parity, §9.4), with a larger turn budget
+  (§4.6 capability floor). `build_harness_config` is pure/tested; the live OpenHands session is
+  behind an injectable `harness_runner` (deferred default raises with the live-path note).
+  Verified end-to-end through `run_mutation_window` with a fake harness (green path).
+- ✅ **Backend factory** (`make_mutation_backend_factory`): routes `local` →
+  `LocalMutationBackend` / else → `ClaudeMutationBackend`, ready to drop into
+  `LocalGenerationOps`'s `mutation_backend_factory` seam (the controller already routes
+  `backend="local"`, §4.7). Optional `local` extra (vllm + openhands) added to `pyproject.toml`.
+- ⏳ **Deferred (needs infra):** the *live* vLLM serve of a LoRA-merged model on a GPU + the
+  OpenHands harness session against it; validating multi-hour stability of a 32B model on the
+  harness (Appendix A open question).
+
+**Phases 6–7 — not started.**
 
 **Invariants already enforced in code:** only the controller patches post-benchmark fields
 (§7.2); there is no agent-facing global-memory write path (§7.3); the global-memory pass is
@@ -935,14 +958,15 @@ launches without killing in-flight jobs (§5.4); the GA keeps population size + 
 across generations (5 survivors carried with cached scores + 5 offspring filling culled slots,
 §3.2).
 
-**Resume point (next session) — Phase 5 (local-model backend).** Add the §4.6 local backend:
-vLLM serving of a LoRA-merged population model behind an OpenAI-compatible endpoint, an
-OpenHands (or shim) harness exposing the same `darwin-mcp` tools + directive, and a
-`LocalMutationBackend` implementing the §4.2 contract so it plugs into the existing
-`mutation_backend_factory` seam (the controller already routes `backend="local"` to it). The
-backend-selection policy (`claude`/`local`/`mixed`) is already wired in the controller. Work
-continues on branch `v2-foundation`. Run tests with
-`uv run --python 3.14 --extra dev python -m pytest -q`.
+**Resume point (next session) — Phase 6 (anti-gaming, diversity, scale-up).** With the loop and
+both backends built, add the §6.4 anti-gaming heuristics: held-out/rotating evals are wired
+(§6.2), so next is the **contamination scan** (n-gram overlap of the genome's data scripts vs.
+eval items), the **genome-diff hack inspection** (lightweight Claude/rule-based review flagging
+benchmark special-casing — feeds `λ_penalty`), and the **plausibility/generalization-gap** check;
+then the §3.4 diversity safeguard (enable the already-built `diversity_pick` with a
+code-embedding distance fn); then scale-up to the 32B coder + sharding/QLoRA. The anti-gaming
+`antigaming_flags` already feed `reduce_fitness` (§6.3) — wire the producers. Work continues on
+branch `v2-foundation`. Run tests with `uv run --python 3.14 --extra dev python -m pytest -q`.
 
 ---
 

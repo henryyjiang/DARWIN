@@ -18,6 +18,12 @@ dev = [
 agent = [
     "claude-agent-sdk>=0.1.0",
 ]
+# The local-model backend (§4.6): vLLM serving + the OpenHands harness. GPU-only, lazy-imported;
+# the pure config/command builders and the backend contract work without these installed.
+local = [
+    "vllm>=0.6",
+    "openhands-ai>=0.10",
+]
 
 [build-system]
 requires = ["hatchling"]

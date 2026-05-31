@@ -13,7 +13,9 @@ Backend-agnostic core (this package):
 
 Backends behind the one interface:
 - `claude_backend.ClaudeMutationBackend` — Claude Agent SDK headless session (§4.5).
-- local-model harness (§4.6) — Phase 5, not yet implemented.
+- `local_backend.LocalMutationBackend` — the population model as mutator via vLLM + an agentic
+  harness (§4.6); the live session is deferred behind an injectable harness runner.
+- `make_mutation_backend_factory` — the default `claude`/`local` router for the controller seam.
 """
 
 from darwin.mutation_agent.smoke import SmokeTest, SmokeResult
@@ -25,6 +27,13 @@ from darwin.mutation_agent.backend import (
     MutationResult,
 )
 from darwin.mutation_agent.runner import run_mutation_window
+from darwin.mutation_agent.vllm_serving import VLLMServeConfig, build_serve_command
+from darwin.mutation_agent.local_backend import (
+    HarnessConfig,
+    LocalMutationBackend,
+    build_harness_config,
+    make_mutation_backend_factory,
+)
 
 __all__ = [
     "SmokeTest",
@@ -36,4 +45,10 @@ __all__ = [
     "MutationContext",
     "MutationResult",
     "run_mutation_window",
+    "VLLMServeConfig",
+    "build_serve_command",
+    "HarnessConfig",
+    "LocalMutationBackend",
+    "build_harness_config",
+    "make_mutation_backend_factory",
 ]
