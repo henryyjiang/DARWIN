@@ -810,9 +810,11 @@ Context a new session needs that isn't obvious from the repo alone:
 
 **Tooling.** The project standardizes on **`uv`** (the Windows host has no bare `python`; uv
 manages CPython 3.14.4). Layout/deps in `pyproject.toml`. Run the suite with:
-`uv run --python 3.14 --extra dev python -m pytest -q` — **296 tests passing**. (If `uv`'s
-resolver chokes on the `local` extra — an upstream `openhands-ai`/Python-version drift unrelated
-to DARWIN — run the existing venv directly: `.venv/Scripts/python.exe -m pytest -q`.)
+`uv run --python 3.14 --extra dev python -m pytest -q` — **296 tests passing**. (The heavy
+Linux/GPU-only `local`-extra deps — `vllm`, `openhands-ai` — are environment-marked to
+`sys_platform == 'linux'` + Python `>=3.12,<3.14` since `openhands-ai` doesn't support 3.14; this
+keeps uv's universal resolution satisfiable and the Windows/3.14 dev host installs + tests without
+them. They're lazy-imported and never touched by the suite.)
 
 **Code layout (actual).** All Python lives under a single importable `darwin/` package
 (`darwin.config`, `darwin.controller`, `darwin.mutation_agent`, `darwin.finetune`,
@@ -1102,7 +1104,7 @@ up the substrate:
   `genome_code_distance` for an embedding distance, Appendix A); set `cost.gen_budget_usd` /
   `per_job_*` caps; choose `antigaming.genome_reviewer` (`claude` default vs. `rule` for
   strict-local). Work continues on branch `v2-foundation`. Run tests with
-  `.venv/Scripts/python.exe -m pytest -q` (or the `uv` command if the resolver is healthy).
+  `uv run --python 3.14 --extra dev python -m pytest -q`.
 
 ---
 

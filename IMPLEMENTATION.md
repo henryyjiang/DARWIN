@@ -188,14 +188,17 @@ The dev/orchestration host is **Windows + PowerShell**; training/agent/eval run 
 containers on Lambda GPUs**. The controller is cross-platform.
 
 ```powershell
-# tests (see §7 for the uv-resolver note)
-.venv\Scripts\python.exe -m pytest -q
+# tests
+uv run --python 3.14 --extra dev python -m pytest -q
 
 # the darwin-mcp server (stdio) — the agent tool surface
-.venv\Scripts\python.exe -m darwin.mcp.server --root .
+uv run python -m darwin.mcp.server --root .
 
 # the run-status dashboard (works mid-run)
-.venv\Scripts\python.exe -m darwin.observability --runs runs --cost runs\cost.jsonl
+uv run python -m darwin.observability --runs runs --cost runs\cost.jsonl
+
+# the full loop
+uv run darwin --config run.example.yaml --generations 5
 
 # build a container image (from repo root)
 docker build -f containers/darwin-agent.Dockerfile --build-arg HARNESS=agent -t darwin-agent .
@@ -232,12 +235,14 @@ Key config switches (`DarwinConfig`, defaults from §10.1): `mutation.backend` (
 ## 7. How to test
 
 ```powershell
-.venv\Scripts\python.exe -m pytest -q          # 284 passing
+uv run --python 3.14 --extra dev python -m pytest -q     # 296 passing
 ```
 
-> **uv-resolver note:** the documented `uv run --python 3.14 --extra dev python -m pytest -q`
-> currently fails resolving the optional `local` extra (`openhands-ai` vs Python 3.14, upstream
-> drift). Run the existing venv directly as above until that's pinned.
+> The heavy `local`-extra deps (`vllm`, `openhands-ai`) are environment-marked to
+> `sys_platform == 'linux'` + Python `>=3.12,<3.14` (openhands-ai doesn't support 3.14), so uv's
+> universal resolution stays satisfiable and the Windows/3.14 dev host installs + tests without
+> them — they're lazy-imported and never touched by the suite. A Linux 3.12/3.13 GPU host gets
+> them with `--extra local`.
 
 **What the unit tests cover (no infra needed):** config; GA + selection + diversity; the full
 controller loop with fakes incl. crash/resume + budget `deferred`; the mutation lifecycle (smoke,
