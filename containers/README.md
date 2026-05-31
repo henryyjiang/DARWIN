@@ -29,5 +29,14 @@ and role constructors (`agent_container` / `finetune_container` / `eval_containe
 correct mounts + network per §8.5, plus `DockerContainerRunner` to shell them out. The spec
 builder refuses to mount the Docker socket and never emits `--privileged` (§8.2).
 
+`ContainerGenerationOps` (`darwin/controller/container_ops.py`, selected with `mode: container`
+in the run config) is what actually drives these at run time: it launches `darwin-agent` (its CMD
+is `python -m darwin.mutation_agent.entrypoint`, which reads the window params from the `DARWIN_*`
+env and drives the §4 window against the bind-mounted genome), then runs `darwin-finetune` via
+`ContainerFinetuneBackend` and `darwin-eval` via `EvalContainerBenchmarkBackend`. The agent's
+genome dir is mounted **rw** (edits land in place); a scratch mount carries the result JSON and
+the seeded/ingested per-model memory; the eval container gets one **writable scores mount** for
+the score handoff and otherwise stays `--network none`.
+
 _Dockerfiles are reference builds; image tags + the base-model snapshot are wired when the live
 GPU plane lands. The v1 root `Dockerfile` (nanoGPT) was removed in the Phase 0 teardown._

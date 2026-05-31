@@ -127,6 +127,58 @@ def test_main_assembly_runs_one_generation(tmp_path):
     assert controller.state_store.load(0).completed is True
 
 
+def test_container_mode_assembly_runs_one_generation(tmp_path):
+    """build_controller(mode=container) wires ContainerGenerationOps + the §8.5 image backends."""
+    import json
+    from pathlib import Path as _P
+
+    from darwin.sandbox import ContainerResult
+
+    spec = load_run_spec(_write_config(tmp_path))
+    spec.mode = "container"
+    spec.smoke_command = ["python", "smoke_test.py"]
+    (spec.paths.eval_slices / "0").mkdir(parents=True, exist_ok=True)
+
+    def host_for(s, cp):
+        for m in s.mounts:
+            if cp == m.container_path or cp.startswith(m.container_path + "/"):
+                rel = cp[len(m.container_path):].lstrip("/")
+                return str(_P(m.host_path) / rel) if rel else m.host_path
+        raise AssertionError(cp)
+
+    class DispatchRunner:
+        def run(self, s, *, dry_run=False):
+            if s.image == "darwin-agent":
+                from darwin.mutation_agent.entrypoint import MutationRunConfig, run_window
+                from darwin.mutation_agent.deadline import DeadlineManager
+
+                c = MutationRunConfig.from_env(s.env)
+                c.genome_dir = host_for(s, s.env["DARWIN_GENOME_DIR"])
+                c.store_root = host_for(s, s.env["DARWIN_STORE_ROOT"])
+                c.result_out = host_for(s, s.env["DARWIN_RESULT_OUT"])
+                run_window(c, GreenBackend(), deadline=DeadlineManager(
+                    window_s=100, soft_lead_s=20, kill_grace_s=10, clock=lambda: 0.0, start=0.0))
+            elif s.image == "darwin-finetune":
+                _P(host_for(s, s.env["DARWIN_ADAPTER_OUT"])).write_text("adapter")
+            elif s.image == "darwin-eval":
+                _P(host_for(s, s.env["DARWIN_SCORES_OUT"])).write_text(json.dumps({"code": 0.8}))
+            return ContainerResult(0, "", "", [])
+
+    controller, store, _ledger = build_controller(
+        spec,
+        mutation_backend_factory=lambda name, ctx: GreenBackend(),  # unused in container mode
+        synthesizer=FakeSynth(),
+        container_runner=DispatchRunner(),
+    )
+    nxt = controller.run(spec.generations, bootstrap_or_load_population(spec))
+
+    o0 = nxt.get("o0")
+    assert "# mutated" in (spec.paths.workspace / "o0" / "genome" / "recipe.py").read_text(encoding="utf-8")
+    assert o0.scores == {"code": 0.8}
+    assert store.read_iteration("o0", 0).changes == "c"  # in-container memory ingested
+    assert store.get_global().objectives == "seeded"
+
+
 def test_resume_returns_persisted_population(tmp_path):
     spec = load_run_spec(_write_config(tmp_path))
     spec.smoke_command = [sys.executable, "smoke_test.py"]

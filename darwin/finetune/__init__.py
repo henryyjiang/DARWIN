@@ -22,10 +22,13 @@ from darwin.finetune.job import (
     FinetuneStatus,
 )
 from darwin.finetune.backend import (
+    ContainerFinetuneBackend,
     FinetuneBackend,
     LambdaFinetuneBackend,
     LambdaJobRunner,
     SubprocessFinetuneBackend,
+    classify_finetune_outcome,
+    finetune_env,
 )
 from darwin.finetune.lambda_api import (
     LambdaApiError,
@@ -55,6 +58,9 @@ __all__ = [
     "FinetuneBackend",
     "SubprocessFinetuneBackend",
     "LambdaFinetuneBackend",
+    "ContainerFinetuneBackend",
+    "classify_finetune_outcome",
+    "finetune_env",
     "LambdaJobRunner",
     "LambdaClient",
     "LambdaInstance",

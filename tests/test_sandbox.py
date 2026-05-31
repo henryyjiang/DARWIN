@@ -106,6 +106,17 @@ def test_eval_container_is_zero_egress():
     assert all(m.read_only for m in spec.mounts)  # adapter + eval slice both read-only
 
 
+def test_eval_container_scores_mount_is_writable_and_stays_zero_egress():
+    spec = eval_container(
+        offspring_id="o0", adapter_host="/h/o0/adapter", eval_slice_host="/h/slice3",
+        scores_out_host="/h/o0/scores", command=["python", "eval.py"],
+    )
+    assert spec.network == "none"  # still zero egress — scores leave via a local bind mount
+    ro = {m.container_path: m.read_only for m in spec.mounts}
+    assert ro["/work/scores"] is False  # the one writable mount (the score handoff)
+    assert ro["/work/adapter"] is True and ro["/work/eval_slice"] is True
+
+
 # ------------------------------------------------------------------ runner
 
 

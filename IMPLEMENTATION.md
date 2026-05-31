@@ -2,9 +2,9 @@
 
 > Companion to `ARCHITECTURE.md` (the spec). This doc describes **what is actually built**, the
 > **steps to finish** the live system, and **how to run and test** it. Section refs (§x) point
-> into `ARCHITECTURE.md`. As of the current `v2-foundation` branch: **308 tests passing**,
-> all phase cores (0–7) + the live-infra cores + the run wiring implemented; only the genuinely-
-> live seams remain (real GPUs / Docker / live APIs + heavy ML deps).
+> into `ARCHITECTURE.md`. As of the current `v2-foundation` branch: **323 tests passing**,
+> all phase cores (0–7) + the live-infra cores + the run wiring + the **container execution path**
+> implemented; only the genuinely-live seams remain (real GPUs / Docker / live APIs + heavy ML deps).
 >
 > **Run it:** `python -m darwin --config run.example.yaml --generations 5` — bootstraps the
 > population on disk, assembles the controller, and drives the loop (uses the Claude mutation
@@ -36,7 +36,7 @@ standing up the live substrate and filling a handful of injected "live seams."
 darwin/                      # the importable package (all logic)
   config.py                  # DarwinConfig + all §10.1 sub-configs
   controller/                # generation state machine, GA, resumable state, ops seams
-  mutation_agent/            # §4 window: smoke, checkpoint, deadline, directive, backends
+  mutation_agent/            # §4 window: smoke, checkpoint, deadline, directive, backends, entrypoint
   finetune/                  # §5 jobs, backends, runner, Lambda client, run-sizing, entrypoint
   bench/                     # §6 benchmark jobs, rotation, fitness, eval entrypoint, swe_bench/
   antigaming/                # §6.4 contamination / genome-review / generalization-gap producers
@@ -50,7 +50,7 @@ darwin/                      # the importable package (all logic)
 memory/global/               # seeded global-memory store (objectives/todo/whats_working/cost)
 containers/                  # Dockerfiles (agent/finetune/eval) + egress-network setup
 models/ , runs/              # population dirs + per-generation resumable state
-tests/                       # 37 test files, 284 tests
+tests/                       # 45 test files, 323 tests
 ARCHITECTURE.md              # the spec (§10.3 = living status)
 IMPLEMENTATION.md            # this file
 ```
@@ -77,8 +77,10 @@ live driver needs infra) · 📦 reference artifact (real, not yet built/run).
   **resumes at the first incomplete offspring stage**.
 - `controller/ga.py` — rank/cull, (S,M) pairing (S with replacement, M≠S), diversity pick.
 - `controller/population.py`, `state.py` — `Model`/`Population`, resumable `GenerationState`.
-- `controller/ops.py` — `LocalGenerationOps` wiring the real cores on the local FS (the seam the
-  live container/GPU wrapping slots into).
+- `controller/ops.py` — `LocalGenerationOps` wiring the real cores on the local FS.
+- `controller/container_ops.py` — `ContainerGenerationOps`: runs the window/finetune/eval **inside
+  the §8.5 images** (composes `LocalGenerationOps` for spawn/finetune/benchmark with the container
+  backends; overrides `mutate` to launch `darwin-agent`). The live container/GPU execution path.
 - `controller/diversity.py` — §3.4 genome code-distance (n-gram Jaccard; embedding distance later).
 
 ### Mutation agent (§4) — ✅ cores, 🔌 live sessions
@@ -129,10 +131,15 @@ live driver needs infra) · 📦 reference artifact (real, not yet built/run).
 - `sources/` — whitelisted arXiv (`PaperSource`, citation strings) + HF Hub (`DataSource`, card +
   license) behind a default-deny egress whitelist + injectable transport.
 
-### Containers & safety (§8) — ✅ Python, 📦 images
+### Containers & safety (§8) — ✅ Python (now an execution path), 📦 images
 - `sandbox/` — `ContainerSpec` → `docker run` builder (refuses Docker socket, no `--privileged`,
-  network policy, resource caps) + role constructors + `DockerContainerRunner`.
-- `containers/` — 📦 three Dockerfiles + `setup_whitelist_network.sh`.
+  network policy, resource caps) + role constructors (`agent`/`finetune`/`eval`, the eval role now
+  takes a writable scores mount) + `DockerContainerRunner` + the `ContainerRunner` protocol.
+- The §8.5 images are now wired as the actual execution path via `ContainerGenerationOps` +
+  `ContainerFinetuneBackend` (`finetune/backend.py`) + `EvalContainerBenchmarkBackend`
+  (`bench/job.py`) + the in-container `mutation_agent/entrypoint.py` (`mode: container`).
+- `containers/` — 📦 three Dockerfiles (the `darwin-agent` CMD now runs the mutation entrypoint) +
+  `setup_whitelist_network.sh`.
 
 ### Observability (§9.5) — ✅
 - `observability/dashboard.py` (run-status reader + markdown + CLI) + `attribution.py` (§8.4 audit).
@@ -151,7 +158,15 @@ Each is a single injected interface; everything around it is already tested.
 | vLLM live serve | `VLLMServer` defaults | Real `vllm serve` of a LoRA-merged (and/or expanded) model on a GPU. |
 | Eval data providers | `LocalAntiGamingScanner` `eval_items_provider`/`ood_probe` | Supply host-only held-out items + an OOD probe run to turn on the live contamination + generalization-gap checks (genome-diff review already runs). |
 | Real training/eval | `finetune/entrypoint.py`, `bench/entrypoint.py` | The bodies are written; they run only inside the CUDA images with torch/peft/trl + real datasets/harnesses. |
-| **Container generation ops** | (new `ContainerGenerationOps` / container finetune+eval backends) | Run the window in `darwin-agent`, finetune in `darwin-finetune`, eval in `darwin-eval` via `darwin/sandbox/` + `materialize_model`. Open design points before building: an **in-container mutation entrypoint** (the agent window currently runs in-process via `LocalGenerationOps`), a **writable scores mount** on the eval container, and host↔container path mapping. Today the loop runs via `LocalGenerationOps` (local FS); the sandbox specs/runner/Dockerfiles exist but aren't yet the execution path. |
+
+The **container generation ops are now built** (`controller/container_ops.py`): set `mode: container`
+in the run config and the window runs in `darwin-agent`, finetune in `darwin-finetune`, eval in
+`darwin-eval` via `darwin/sandbox/`. The three design points are resolved — an in-container mutation
+entrypoint (`mutation_agent/entrypoint.py`), a writable scores mount on the eval container
+(`sandbox/roles.eval_container(scores_out_host=...)`), and host↔container path mapping (the
+offspring's `genome` dir bind-mounts rw so edits land in place; a scratch mount carries the result
+JSON + the seeded/ingested per-model memory). It is unit-tested end-to-end with a fake
+`ContainerRunner`; the only thing still needed is a real Docker host + the built images + GPUs.
 
 ---
 
@@ -235,7 +250,7 @@ Key config switches (`DarwinConfig`, defaults from §10.1): `mutation.backend` (
 ## 7. How to test
 
 ```powershell
-uv run --python 3.14 --extra dev python -m pytest -q     # 308 passing
+uv run --python 3.14 --extra dev python -m pytest -q     # 323 passing
 ```
 
 > The heavy `local`-extra deps (`vllm`, `openhands-ai`) are environment-marked to

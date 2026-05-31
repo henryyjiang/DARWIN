@@ -19,7 +19,10 @@ import os
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
+
+if TYPE_CHECKING:
+    from darwin.sandbox import ContainerRunner
 
 
 class BenchmarkError(RuntimeError):
@@ -128,21 +131,94 @@ class SubprocessBenchmarkBackend:
 
 @dataclass
 class EvalContainerBenchmarkBackend:
-    """Live zero-egress `darwin-eval` container backend (§6.2 / §8) — scaffold.
+    """Live zero-egress `darwin-eval` container backend (§6.2 / §8).
 
-    The live path: spin up the `darwin-eval` image (benchmark harnesses only, base-model
-    weights baked in, **zero egress**, §8.5); bind-mount the small adapter and *only* the
-    current generation's private slice read-only (the slice arrives via local bind mount, not
-    the network — train/eval separation, §6.4); load `base + adapter`; run the suite; return
-    the score vector. Deferred until the eval image + harness adapters land (the salvaged
-    `darwin/bench/swe_bench/` harness feeds the coding slice).
+    Spins up the `darwin-eval` image (benchmark harnesses only, base-model weights baked in,
+    **zero egress**, §8.5) via the injected `ContainerRunner`; bind-mounts the small adapter and
+    *only* the current generation's private slice **read-only** (the slice arrives via a local
+    bind mount, not the network — train/eval separation, §6.4) plus one **writable** scores mount
+    for the handoff; loads `base + adapter`; runs the suite; reads back the score vector. The
+    genome-independent reference eval is the image `CMD` (`python3 -m darwin.bench.entrypoint`);
+    pass `command` to override.
+
+    Path mapping (host ↔ container): the adapter dir maps to `/work/adapter`, the slice dir to
+    `/work/eval_slice`, and a writable scores dir to `/work/scores`; the entrypoint reads
+    `base+adapter` from `DARWIN_ADAPTER_PATH` and writes `{benchmark: score}` JSON to
+    `DARWIN_SCORES_OUT` (both in-container paths), which surfaces on the host scores file.
     """
 
+    runner: "ContainerRunner"
     image: str = "darwin-eval"
+    command: list[str] = field(default_factory=list)  # default: the image CMD (entrypoint)
+    gpus: int = 1
+    memory: str = "64g"
+    # The base weights are **baked into** the zero-egress image (Dockerfile sets
+    # DARWIN_BASE_MODEL=/opt/base-model), so by default we do NOT override it — passing an HF id
+    # would make the entrypoint try to fetch with no network. Set `base_model` only to point at a
+    # different in-image path.
+    base_model: str | None = None
+    env: dict[str, str] | None = None
 
     def run(self, job: BenchmarkJob) -> BenchmarkResult:
-        raise NotImplementedError(
-            "EvalContainerBenchmarkBackend is scaffolded; the live zero-egress eval-container "
-            "path lands with the darwin-eval image. Use SubprocessBenchmarkBackend for the "
-            "local/proxy path."
+        from darwin.sandbox import (
+            ADAPTER_PATH,
+            EVAL_SLICE_PATH,
+            SCORES_PATH,
+            eval_container,
+        )
+
+        if job.eval_data_dir is None:
+            raise BenchmarkError(
+                "EvalContainerBenchmarkBackend needs job.eval_data_dir (the host-only held-out "
+                "slice to bind-mount read-only, §6.2); none was supplied"
+            )
+
+        scores_dir = job.adapter_path.parent
+        scores_name = f"scores_{job.offspring_id}.json"
+        host_scores = scores_dir / scores_name
+        if host_scores.exists():
+            host_scores.unlink()  # stale result from a prior run must not be read as fresh
+
+        env = dict(self.env or {})
+        env.update(
+            DARWIN_ADAPTER_PATH=f"{ADAPTER_PATH}/{job.adapter_path.name}",
+            DARWIN_SUITE=",".join(job.suite),
+            DARWIN_EVAL_SLICE=str(job.slice_id),
+            DARWIN_EVAL_DATA_DIR=EVAL_SLICE_PATH,
+            DARWIN_SCORES_OUT=f"{SCORES_PATH}/{scores_name}",
+        )
+        if self.base_model is not None:
+            env["DARWIN_BASE_MODEL"] = self.base_model  # else use the image's baked-in path
+
+        spec = eval_container(
+            offspring_id=job.offspring_id,
+            adapter_host=str(job.adapter_path.parent),
+            eval_slice_host=str(job.eval_data_dir),
+            scores_out_host=str(scores_dir),
+            command=list(self.command),
+            env=env,
+            gpus=self.gpus,
+            memory=self.memory,
+        )
+        spec.image = self.image
+
+        result = self.runner.run(spec)
+        log = (result.stdout or "") + (result.stderr or "")
+        if not result.ok:
+            raise BenchmarkError(f"eval container exited {result.exit_code}\n{log[-4000:]}")
+        if not host_scores.exists():
+            raise BenchmarkError(f"eval container produced no scores file at {host_scores}")
+        try:
+            raw = json.loads(host_scores.read_text(encoding="utf-8"))
+            scores = {str(k): float(v) for k, v in raw.items()}
+        except (ValueError, TypeError) as exc:
+            raise BenchmarkError(f"invalid scores file: {exc}") from exc
+
+        return BenchmarkResult(
+            offspring_id=job.offspring_id,
+            model=job.model,
+            generation=job.generation,
+            slice_id=job.slice_id,
+            scores=scores,
+            log=log,
         )

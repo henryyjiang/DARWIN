@@ -27,6 +27,7 @@ MEMORY_PATH = "/work/memory"
 SMOKE_PATH = "/work/smoke"
 ADAPTER_PATH = "/work/adapter"
 EVAL_SLICE_PATH = "/work/eval_slice"
+SCORES_PATH = "/work/scores"
 
 
 def agent_container(
@@ -34,24 +35,29 @@ def agent_container(
     offspring_id: str,
     genome_host: str,
     memory_host: str,
-    smoke_host: str,
     scratch_host: str,
     command: list[str],
+    smoke_host: str | None = None,
     env: dict[str, str] | None = None,
     cpus: float = 4.0,
     memory: str = "16g",
     pids: int = 512,
 ) -> ContainerSpec:
+    mounts = [
+        Mount(genome_host, GENOME_PATH, read_only=False),
+        Mount(scratch_host, SCRATCH_PATH, read_only=False),
+        Mount(memory_host, MEMORY_PATH, read_only=True),
+    ]
+    # The smoke harness is mounted **ro** only when it lives outside the (writable) genome — so
+    # the agent can't weaken it to force false greens (§4.4.1/§8.2). When the genome carries its
+    # own smoke harness, no separate mount is needed.
+    if smoke_host is not None:
+        mounts.append(Mount(smoke_host, SMOKE_PATH, read_only=True))
     return ContainerSpec(
         image=AGENT_IMAGE,
         name=f"darwin-agent-{offspring_id}",
         command=command,
-        mounts=[
-            Mount(genome_host, GENOME_PATH, read_only=False),
-            Mount(scratch_host, SCRATCH_PATH, read_only=False),
-            Mount(memory_host, MEMORY_PATH, read_only=True),
-            Mount(smoke_host, SMOKE_PATH, read_only=True),
-        ],
+        mounts=mounts,
         network="whitelist",
         resources=ResourceLimits(cpus=cpus, memory=memory, pids=pids),
         env=dict(env or {}),
@@ -90,18 +96,25 @@ def eval_container(
     adapter_host: str,
     eval_slice_host: str,
     command: list[str],
+    scores_out_host: str | None = None,
     env: dict[str, str] | None = None,
     gpus: int = 1,
     memory: str = "64g",
 ) -> ContainerSpec:
+    mounts = [
+        Mount(adapter_host, ADAPTER_PATH, read_only=True),
+        Mount(eval_slice_host, EVAL_SLICE_PATH, read_only=True),
+    ]
+    # The score vector is the one thing the eval container must hand *back* to the host. It
+    # leaves via a writable local bind mount, never the network — `--network none` still holds,
+    # so the zero-egress invariant (the held-out set can't phone home) is intact (§6.2/§8.3).
+    if scores_out_host is not None:
+        mounts.append(Mount(scores_out_host, SCORES_PATH, read_only=False))
     return ContainerSpec(
         image=EVAL_IMAGE,
         name=f"darwin-eval-{offspring_id}",
         command=command,
-        mounts=[
-            Mount(adapter_host, ADAPTER_PATH, read_only=True),
-            Mount(eval_slice_host, EVAL_SLICE_PATH, read_only=True),
-        ],
+        mounts=mounts,
         network="none",  # zero egress — the held-out eval set cannot phone home (§6.2/§8.3)
         resources=ResourceLimits(gpus=gpus, memory=memory),
         env=dict(env or {}),

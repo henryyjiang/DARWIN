@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import subprocess
 from dataclasses import dataclass
+from typing import Protocol
 
 from darwin.sandbox.spec import ContainerSpec, build_docker_run_args
 
@@ -26,6 +27,18 @@ class ContainerResult:
     @property
     def ok(self) -> bool:
         return self.exit_code == 0
+
+
+class ContainerRunner(Protocol):
+    """Runs a `ContainerSpec`, returning its `ContainerResult` (§8).
+
+    `DockerContainerRunner` is the live implementation; the container backends
+    (`ContainerFinetuneBackend`, `EvalContainerBenchmarkBackend`) and `ContainerGenerationOps`
+    accept this protocol so the orchestration is testable with a fake runner that never shells
+    out to Docker (mirroring the Lambda/vLLM injectable-seam pattern).
+    """
+
+    def run(self, spec: ContainerSpec, *, dry_run: bool = False) -> ContainerResult: ...
 
 
 @dataclass

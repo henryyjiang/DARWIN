@@ -35,6 +35,7 @@ from darwin.controller.controller import (
     MutateOutcome,
 )
 from darwin.controller.ops import LocalGenerationOps
+from darwin.controller.container_ops import ContainerGenerationOps
 from darwin.controller.antigaming_ops import (
     LocalAntiGamingScanner,
     genome_mutation_diff,
@@ -70,6 +71,7 @@ __all__ = [
     "MutateOutcome",
     "FinetuneOutcomeView",
     "LocalGenerationOps",
+    "ContainerGenerationOps",
     "LocalAntiGamingScanner",
     "genome_mutation_diff",
     "bootstrap_population",

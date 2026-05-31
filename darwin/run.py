@@ -52,6 +52,7 @@ class RunPaths:
     memory: Path  # memory/ (global + per-model store root)
     base_genome: Path  # the shared starting genome template (cloned into seeds)
     cost_ledger: Path
+    eval_slices: Path  # host-only held-out slices: eval_slices/<slice_id>/ (container mode, §6.2)
 
     @classmethod
     def from_dict(cls, root: Path, d: dict[str, Any]) -> "RunPaths":
@@ -64,6 +65,7 @@ class RunPaths:
             memory=g("memory", "memory"),
             base_genome=Path(d["base_genome"]) if "base_genome" in d else root / "base_genome",
             cost_ledger=g("cost_ledger", "runs/cost.jsonl"),
+            eval_slices=g("eval_slices", "eval_slices"),
         )
 
 
@@ -74,6 +76,7 @@ class RunSpec:
     config: DarwinConfig
     paths: RunPaths
     generations: int = 1
+    mode: str = "local"  # "local" (in-process) | "container" (run stages in the §8.5 images)
     smoke_command: list[str] = field(default_factory=list)
     finetune_command: list[str] = field(default_factory=list)
     benchmark_command: list[str] = field(default_factory=list)
@@ -105,6 +108,7 @@ def load_run_spec(path: Path | str) -> RunSpec:
         config=config,
         paths=paths,
         generations=int(data.get("generations", 1)),
+        mode=str(data.get("mode", "local")),
         smoke_command=list(data.get("smoke_command", [])),
         finetune_command=list(data.get("finetune_command", [])),
         benchmark_command=list(data.get("benchmark_command", [])),
@@ -142,23 +146,36 @@ def build_controller(
     antigaming=None,
     enable_global_memory: bool = True,
     base_model: str | None = None,
+    container_runner=None,
 ) -> tuple[Controller, MemoryStore, CostLedger]:
-    """Assemble the controller from a RunSpec + injected backends (the testable seam)."""
+    """Assemble the controller from a RunSpec + injected backends (the testable seam).
+
+    `spec.mode` selects the execution path: `local` runs every stage in-process via
+    `LocalGenerationOps` (default); `container` runs the window/finetune/eval inside the §8.5
+    images via `ContainerGenerationOps` + the container backends (a real Docker host is needed
+    at run time, but the assembly is identical and testable).
+    """
     store = MemoryStore(spec.paths.memory)
     ledger = CostLedger(spec.paths.cost_ledger)
-    ops = LocalGenerationOps(
-        config=spec.config,
-        store=store,
-        ledger=ledger,
-        workspace=spec.paths.workspace,
-        mutation_backend_factory=mutation_backend_factory,
-        finetune_backend=finetune_backend
-        or SubprocessFinetuneBackend(command=spec.finetune_command or ["true"]),
-        benchmark_backend=benchmark_backend
-        or SubprocessBenchmarkBackend(command=spec.benchmark_command or ["true"]),
-        smoke_command=spec.smoke_command or ["true"],
-        base_model=base_model or spec.config.finetune.base_model,
-    )
+    if spec.mode == "container":
+        ops = _build_container_ops(
+            spec, store, ledger, finetune_backend, benchmark_backend, base_model,
+            container_runner,
+        )
+    else:
+        ops = LocalGenerationOps(
+            config=spec.config,
+            store=store,
+            ledger=ledger,
+            workspace=spec.paths.workspace,
+            mutation_backend_factory=mutation_backend_factory,
+            finetune_backend=finetune_backend
+            or SubprocessFinetuneBackend(command=spec.finetune_command or ["true"]),
+            benchmark_backend=benchmark_backend
+            or SubprocessBenchmarkBackend(command=spec.benchmark_command or ["true"]),
+            smoke_command=spec.smoke_command or ["true"],
+            base_model=base_model or spec.config.finetune.base_model,
+        )
     budget = BudgetGuard(ledger, spec.config.cost) if spec.config.cost.gen_budget_usd else None
     controller = Controller(
         config=spec.config,
@@ -172,6 +189,44 @@ def build_controller(
         enable_global_memory=enable_global_memory,
     )
     return controller, store, ledger
+
+
+def _build_container_ops(
+    spec: RunSpec, store, ledger, finetune_backend, benchmark_backend, base_model,
+    container_runner=None,
+):
+    """Assemble `ContainerGenerationOps` wiring the §8.5 images (container mode).
+
+    `container_runner` is injectable so the assembly is testable with a fake; `main` leaves it
+    None to get the live `DockerContainerRunner`."""
+    import os
+
+    from darwin.bench import EvalContainerBenchmarkBackend
+    from darwin.controller import ContainerGenerationOps
+    from darwin.finetune import ContainerFinetuneBackend
+    from darwin.sandbox import DockerContainerRunner
+
+    runner = container_runner or DockerContainerRunner()
+    resolved_base = base_model or spec.config.finetune.base_model
+    # forward the agent's API key into the sandboxed window (the only secret it needs, §8.2)
+    agent_env = {
+        k: os.environ[k] for k in ("ANTHROPIC_API_KEY",) if os.environ.get(k)
+    }
+    slices_root = spec.paths.eval_slices
+    return ContainerGenerationOps(
+        config=spec.config,
+        store=store,
+        ledger=ledger,
+        workspace=spec.paths.workspace,
+        finetune_backend=finetune_backend
+        or ContainerFinetuneBackend(runner=runner, base_model=resolved_base),
+        benchmark_backend=benchmark_backend or EvalContainerBenchmarkBackend(runner=runner),
+        smoke_command=spec.smoke_command or ["python", "smoke_test.py"],
+        container_runner=runner,
+        base_model=resolved_base,
+        agent_env=agent_env,
+        eval_slice_dir=lambda sid: slices_root / str(sid),
+    )
 
 
 def _default_mutation_factory(spec: RunSpec):

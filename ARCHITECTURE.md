@@ -1077,11 +1077,25 @@ global pass).**
 - ✅ **§6.2 survivor re-benchmark on rotation**: `Model.scored_slice` tracks the slice a model's
   cached scores were computed on; when the held-out slice rotates, survivors are cheaply re-scored
   on the current slice (not re-finetuned) so all 10 share one slice. No-op when rotation is off.
-- ⏳ **Remaining glue:** a `ContainerGenerationOps` so the window/finetune/eval actually execute
-  *inside* the `darwin-agent`/`darwin-finetune`/`darwin-eval` images (today the loop runs via
-  `LocalGenerationOps` on the local FS; the sandbox specs/runner/Dockerfiles exist but aren't yet
-  the execution path) — needs an in-container mutation entrypoint, a writable eval scores mount,
-  and path mapping.
+- ✅ **Container execution path** (`controller/container_ops.py`, `mode: container`): the
+  window/finetune/eval now actually execute *inside* the `darwin-agent`/`darwin-finetune`/
+  `darwin-eval` images. `ContainerGenerationOps` composes `LocalGenerationOps` (with the new
+  `ContainerFinetuneBackend` + `EvalContainerBenchmarkBackend`, both behind an injectable
+  `ContainerRunner`) for spawn/finetune/benchmark and overrides `mutate` to launch the agent
+  container — whose process is the new in-container `mutation_agent/entrypoint.py`. The three open
+  design points are resolved: the in-container mutation entrypoint; a **writable scores mount** on
+  the eval container (`eval_container(scores_out_host=...)`, zero-egress preserved — scores leave by
+  a local bind mount, not the network); and **host↔container path mapping** (the offspring `genome`
+  bind-mounts rw so edits/checkpoints land in place — no move-back step; a scratch mount carries the
+  result JSON, and the per-model memory is seeded in / ingested back so the agent's ORIENT reads its
+  lineage + global memory and the controller's post-benchmark patch + global pass see the new file).
+  Unit-tested end-to-end through the controller with a fake `ContainerRunner`; what's left is the
+  live substrate (a Docker host + built images + GPUs).
+- ⏳ **Remaining glue:** the live anti-gaming **eval-data providers** for container mode
+  (`eval_slice_dir` host-only slice dir is wired through to the eval mount; the
+  `eval_items_provider`/`ood_probe` for the contamination + generalization-gap checks are still
+  injected seams), and the live `agent_env` secrets passthrough validated against a real
+  `darwin-agent` session.
 
 **Invariants already enforced in code:** only the controller patches post-benchmark fields
 (§7.2); there is no agent-facing global-memory write path (§7.3); the global-memory pass is

@@ -21,17 +21,67 @@ from __future__ import annotations
 import os
 import subprocess
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Protocol
 
 from darwin.finetune.job import FinetuneJob, FinetuneOutcome
 
 if TYPE_CHECKING:
     from darwin.finetune.lambda_api import LambdaClient, LambdaInstance
+    from darwin.sandbox import ContainerRunner
 
 # Default substrings that mark a recipe-level failure in a training log (§5.3). Case-insensitive.
 _OOM_PATTERNS = ("out of memory", "cuda out of memory", "oom", "outofmemoryerror")
 _NAN_PATTERNS = ("nan loss", "loss is nan", "inf loss", "loss became inf", "non-finite loss")
+
+
+def finetune_env(job: FinetuneJob, adapter_out: str, *, safe_mode: bool) -> dict[str, str]:
+    """The `DARWIN_*` env every finetune entrypoint reads (§5.3), shared across backends.
+
+    `adapter_out` is given explicitly because the subprocess backend writes to the host path
+    while the container backend writes to the in-container mount path — everything else is the
+    same contract (the genome's entrypoint parses these, `finetune/entrypoint.py`)."""
+    return {
+        "DARWIN_ADAPTER_OUT": adapter_out,
+        "DARWIN_LORA_RANK": str(job.lora_rank),
+        "DARWIN_LORA_ALPHA": str(job.lora_alpha),
+        "DARWIN_FINETUNE_METHOD": job.method,
+        "DARWIN_SAFE_MODE": "1" if safe_mode else "0",
+    }
+
+
+def classify_finetune_outcome(
+    *,
+    exit_code: int,
+    log: str,
+    adapter_out: Path,
+    gpu_hours: float,
+    timed_out: bool = False,
+    oom_patterns: tuple[str, ...] = _OOM_PATTERNS,
+    nan_patterns: tuple[str, ...] = _NAN_PATTERNS,
+) -> FinetuneOutcome:
+    """Map an entrypoint run (exit code + log + did-the-adapter-materialize) to a `FinetuneOutcome`.
+
+    Shared by every backend that runs the genome's entrypoint (subprocess / container) so the
+    §5.3 failure taxonomy is identical regardless of where the job ran: timeout, OOM, NaN-loss,
+    other non-zero exit (all recipe-level), and the green-exit-but-no-adapter case.
+    """
+    if timed_out:
+        return FinetuneOutcome(False, gpu_hours, failure_mode="timeout", log=log)
+    if exit_code == 0:
+        if adapter_out.exists():
+            return FinetuneOutcome(True, gpu_hours, adapter_path=adapter_out, log=log)
+        # green exit but no adapter materialized -> recipe failure (§4.4.1 step 4 analogue)
+        return FinetuneOutcome(False, gpu_hours, failure_mode="no_adapter", log=log)
+    low = log.lower()
+    if any(p in low for p in oom_patterns):
+        mode = "oom"
+    elif any(p in low for p in nan_patterns):
+        mode = "nan_loss"
+    else:
+        mode = "nonzero_exit"
+    return FinetuneOutcome(False, gpu_hours, failure_mode=mode, log=log)
 
 
 class FinetuneBackend(Protocol):
@@ -52,17 +102,12 @@ class SubprocessFinetuneBackend:
 
     def run(self, job: FinetuneJob, *, safe_mode: bool = False) -> FinetuneOutcome:
         env = dict(os.environ if self.env is None else self.env)
-        env.update(
-            DARWIN_ADAPTER_OUT=str(job.adapter_out),
-            DARWIN_LORA_RANK=str(job.lora_rank),
-            DARWIN_LORA_ALPHA=str(job.lora_alpha),
-            DARWIN_FINETUNE_METHOD=job.method,
-            DARWIN_SAFE_MODE="1" if safe_mode else "0",
-        )
+        env.update(finetune_env(job, str(job.adapter_out), safe_mode=safe_mode))
         job.adapter_out.parent.mkdir(parents=True, exist_ok=True)
 
         start = time.monotonic()
         timed_out = False
+        exit_code = -1
         try:
             proc = subprocess.run(
                 self.command,
@@ -76,29 +121,18 @@ class SubprocessFinetuneBackend:
             log = (proc.stdout or "") + (proc.stderr or "")
         except subprocess.TimeoutExpired as exc:
             timed_out = True
-            exit_code = -1
             log = f"finetune timed out after {self.timeout_s}s\n{exc.output or ''}"
         gpu_hours = (time.monotonic() - start) / 3600.0
 
-        if timed_out:
-            return FinetuneOutcome(False, gpu_hours, failure_mode="timeout", log=log)
-
-        if exit_code == 0:
-            if job.adapter_out.exists():
-                return FinetuneOutcome(
-                    True, gpu_hours, adapter_path=job.adapter_out, log=log
-                )
-            # green exit but no adapter materialized -> recipe failure (§4.4.1 step 4 analogue)
-            return FinetuneOutcome(False, gpu_hours, failure_mode="no_adapter", log=log)
-
-        low = log.lower()
-        if any(p in low for p in self.oom_patterns):
-            mode = "oom"
-        elif any(p in low for p in self.nan_patterns):
-            mode = "nan_loss"
-        else:
-            mode = "nonzero_exit"
-        return FinetuneOutcome(False, gpu_hours, failure_mode=mode, log=log)
+        return classify_finetune_outcome(
+            exit_code=exit_code,
+            log=log,
+            adapter_out=job.adapter_out,
+            gpu_hours=gpu_hours,
+            timed_out=timed_out,
+            oom_patterns=self.oom_patterns,
+            nan_patterns=self.nan_patterns,
+        )
 
 
 class LambdaJobRunner(Protocol):
@@ -205,3 +239,78 @@ class LambdaFinetuneBackend:
             self.client.terminate(instance_ids)
         except Exception:  # pragma: no cover - best-effort cleanup
             pass
+
+
+@dataclass
+class ContainerFinetuneBackend:
+    """Runs the finetune job inside the `darwin-finetune` image on the local Docker host (§5/§8).
+
+    The on-host counterpart to `LambdaFinetuneBackend`: instead of provisioning a remote GPU it
+    launches the §8.5 finetune container (genome mounted **ro**, the adapter-out dir mounted
+    **rw**, GPUs, whitelist egress for HF Hub) via the injected `ContainerRunner` and classifies
+    the run from its exit code + log with the *same* §5.3 taxonomy as the subprocess backend
+    (`classify_finetune_outcome`). The genome's entrypoint is the image `CMD` by default
+    (`python3 -m darwin.finetune.entrypoint`); pass `command` to override. GPU-hours are billed
+    from wall-clock × GPU count.
+
+    Path mapping: the adapter-out *directory* (`job.adapter_out.parent`) is bind-mounted rw at
+    the canonical `/work/adapter`, and the entrypoint writes to `DARWIN_ADAPTER_OUT` =
+    `/work/adapter/<filename>`, so the artifact lands back on the host at `job.adapter_out`.
+    """
+
+    runner: "ContainerRunner"
+    image: str = "darwin-finetune"
+    # default: use the image CMD (the reference entrypoint, python3 -m darwin.finetune.entrypoint)
+    command: list[str] = field(default_factory=list)
+    gpus: int = 1
+    memory: str = "64g"
+    base_model: str | None = None  # set DARWIN_BASE_MODEL when given (else the entrypoint default)
+    env: dict[str, str] | None = None
+    clock: Callable[[], float] | None = None
+    oom_patterns: tuple[str, ...] = _OOM_PATTERNS
+    nan_patterns: tuple[str, ...] = _NAN_PATTERNS
+
+    def _num_gpus(self, job: FinetuneJob) -> int:
+        """GPU count: from the run size (param-scaling, §5.3) when present, else the static default."""
+        if job.run_size is None:
+            return self.gpus
+        from darwin.finetune.sizing import LAMBDA_CATALOG, plan_instance
+
+        return plan_instance(job.run_size, LAMBDA_CATALOG).num_gpus
+
+    def run(self, job: FinetuneJob, *, safe_mode: bool = False) -> FinetuneOutcome:
+        from darwin.sandbox import ADAPTER_PATH, finetune_container
+
+        clock = self.clock or time.monotonic
+        num_gpus = self._num_gpus(job)
+        job.adapter_out.parent.mkdir(parents=True, exist_ok=True)
+
+        container_adapter_out = f"{ADAPTER_PATH}/{job.adapter_out.name}"
+        env = dict(self.env or {})
+        env.update(finetune_env(job, container_adapter_out, safe_mode=safe_mode))
+        if self.base_model is not None:
+            env["DARWIN_BASE_MODEL"] = self.base_model
+
+        spec = finetune_container(
+            offspring_id=job.offspring_id,
+            genome_host=str(job.genome_dir),
+            adapter_out_host=str(job.adapter_out.parent),
+            command=list(self.command),
+            env=env,
+            gpus=num_gpus,
+            memory=self.memory,
+        )
+        spec.image = self.image
+
+        start = clock()
+        result = self.runner.run(spec)
+        gpu_hours = (clock() - start) / 3600.0 * num_gpus
+
+        return classify_finetune_outcome(
+            exit_code=result.exit_code,
+            log=(result.stdout or "") + (result.stderr or ""),
+            adapter_out=job.adapter_out,
+            gpu_hours=gpu_hours,
+            oom_patterns=self.oom_patterns,
+            nan_patterns=self.nan_patterns,
+        )

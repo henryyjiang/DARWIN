@@ -34,6 +34,7 @@ RUN git config --system user.name "DARWIN" \
 USER darwin
 WORKDIR /work/genome
 
-# The controller supplies the actual command (it drives the agent loop via the SDK/harness).
-# Default to a shell so `docker run -it darwin-agent` is usable for debugging.
-CMD ["bash"]
+# Default: the in-container mutation entrypoint (ContainerGenerationOps launches the image with
+# no command, so this CMD drives the §4.2 window from the DARWIN_* env it sets). Override with a
+# shell (`docker run -it darwin-agent bash`) for debugging.
+CMD ["python", "-m", "darwin.mutation_agent.entrypoint"]

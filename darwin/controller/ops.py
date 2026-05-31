@@ -58,6 +58,10 @@ class LocalGenerationOps:
     smoke_command: list[str]
     base_model: str = "base"
     deadline_factory: Callable[[], DeadlineManager] | None = None
+    # §6.2 host-only held-out slice provider: slice_id -> the slice dir bind-mounted read-only
+    # into the eval container (required by the container eval backend; the subprocess backend
+    # passes it as DARWIN_EVAL_DATA_DIR). None => no slice dir (the default local/proxy path).
+    eval_slice_dir: Callable[[int], Path | None] | None = None
 
     # ------------------------------------------------------------------ layout
     def _genome_dir(self, name: str) -> Path:
@@ -176,5 +180,6 @@ class LocalGenerationOps:
             adapter_path=offspring.adapter_path,
             suite=list(self.config.benchmark.suite),
             slice_id=slice_id,
+            eval_data_dir=self.eval_slice_dir(slice_id) if self.eval_slice_dir else None,
         )
         return self.benchmark_backend.run(job).scores

@@ -14,14 +14,21 @@ The Dockerfiles and the whitelist-network setup live under the repo-root `contai
 """
 
 from darwin.sandbox.roles import (
+    ADAPTER_PATH,
     AGENT_IMAGE,
     EVAL_IMAGE,
+    EVAL_SLICE_PATH,
     FINETUNE_IMAGE,
+    GENOME_PATH,
+    MEMORY_PATH,
+    SCORES_PATH,
+    SCRATCH_PATH,
+    SMOKE_PATH,
     agent_container,
     eval_container,
     finetune_container,
 )
-from darwin.sandbox.runner import ContainerResult, DockerContainerRunner
+from darwin.sandbox.runner import ContainerResult, ContainerRunner, DockerContainerRunner
 from darwin.sandbox.spec import (
     WHITELIST_NETWORK,
     ContainerSpec,
@@ -42,6 +49,14 @@ __all__ = [
     "AGENT_IMAGE",
     "FINETUNE_IMAGE",
     "EVAL_IMAGE",
+    "GENOME_PATH",
+    "SCRATCH_PATH",
+    "MEMORY_PATH",
+    "SMOKE_PATH",
+    "ADAPTER_PATH",
+    "EVAL_SLICE_PATH",
+    "SCORES_PATH",
     "DockerContainerRunner",
+    "ContainerRunner",
     "ContainerResult",
 ]

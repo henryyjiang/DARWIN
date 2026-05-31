@@ -3,12 +3,19 @@
 
 generations: 5
 
+# Execution path: "local" runs every stage in-process on the host (no Docker needed; the default,
+# good for dev + the test suite); "container" runs the window/finetune/eval inside the §8.5 images
+# (darwin-agent / darwin-finetune / darwin-eval) via ContainerGenerationOps — needs a Docker host,
+# the built images, the darwin-egress network, and the held-out eval slices under paths.eval_slices.
+mode: local
+
 paths:
   workspace: models          # population dirs: models/<name>/{genome,adapter.bin,memory}
   runs: runs                 # resumable state: runs/gen_<n>/state.json
   memory: memory             # global + per-model memory store root
   base_genome: base_genome   # the shared starting recipe cloned into the 5 seeds
   cost_ledger: runs/cost.jsonl
+  eval_slices: eval_slices   # container mode: host-only held-out slices, eval_slices/<slice_id>/ (§6.2)
 
 # Commands the LocalGenerationOps backends invoke (run inside the genome dir / eval dir).
 # In a live containerized run these are replaced by ContainerGenerationOps; here they are the
