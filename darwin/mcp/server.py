@@ -21,7 +21,13 @@ from mcp.server.fastmcp import FastMCP
 
 from darwin.cost import BudgetGuard, CostLedger
 from darwin.memory import MemoryStore
-from darwin.mcp.tools import MemoryToolset, AgentToolset, CostToolset
+from darwin.mcp.tools import (
+    AgentToolset,
+    CostToolset,
+    DataToolset,
+    MemoryToolset,
+    PaperToolset,
+)
 
 
 def create_server(
@@ -30,6 +36,8 @@ def create_server(
     name: str = "darwin-mcp",
     ledger: CostLedger | None = None,
     budget_guard: BudgetGuard | None = None,
+    *,
+    enable_retrieval: bool = True,
 ) -> FastMCP:
     """Build a FastMCP server exposing the memory tool group over `store`.
 
@@ -38,6 +46,10 @@ def create_server(
     registered, bound to that offspring's checkpointer. When a `ledger` is also supplied, the
     `cost.report` / `cost.get_budget` tools are registered, bound to that offspring's
     generation/model (and the optional `budget_guard` for cap status).
+
+    `enable_retrieval` (default True) registers the whitelisted `paper.*` / `data.*` retrieval
+    tools (§8.3/§8.4); these are the agent's only web access. Registration is network-free — the
+    egress whitelist is enforced when a tool is actually called.
     """
     server = FastMCP(name)
     tools = MemoryToolset(store)
@@ -87,6 +99,26 @@ def create_server(
             datasets_used=datasets_used,
             papers_cited=papers_cited,
         )
+
+    if enable_retrieval:
+        paper_tools = PaperToolset()
+        data_tools = DataToolset()
+
+        @server.tool(name="paper_search", description="Search arXiv for papers matching a query (whitelisted, §8.3). Returns titles, authors, abstracts, and a canonical citation string to record in your memory file (§8.4).")
+        def paper_search(query: str, limit: int = 5) -> dict[str, Any]:
+            return paper_tools.search(query, limit)
+
+        @server.tool(name="paper_fetch", description="Fetch one arXiv paper by id (e.g. 2401.01234). Returns its abstract and canonical citation string. Record any idea you use from it in papers_cited and inline in the genome (§8.4).")
+        def paper_fetch(arxiv_id: str) -> dict[str, Any]:
+            return paper_tools.fetch(arxiv_id)
+
+        @server.tool(name="data_search", description="Search the Hugging Face Hub for existing, license-clear datasets (whitelisted, §8.3). Compose your data mix from these — do not write scrapers. Returns id, license, and card.")
+        def data_search(query: str, limit: int = 5) -> dict[str, Any]:
+            return data_tools.search(query, limit)
+
+        @server.tool(name="data_fetch", description="Fetch one HF dataset by id (optionally a revision). Returns the dataset card + license string; record the id@revision in datasets_used (§8.3).")
+        def data_fetch(dataset_id: str, revision: str = "main") -> dict[str, Any]:
+            return data_tools.fetch(dataset_id, revision)
 
     if agent_context is not None:
         agent_tools = AgentToolset(agent_context)

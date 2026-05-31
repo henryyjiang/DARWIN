@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any
 
 from darwin.cost import BudgetGuard, CostLedger
 from darwin.memory import IterationMemory, MemoryStore, MemoryValidationError
+from darwin.sources import DataSource, EgressBlocked, PaperSource
 
 if TYPE_CHECKING:
     from darwin.mutation_agent.backend import MutationContext
@@ -137,6 +138,62 @@ class AgentToolset:
     @property
     def finalized(self) -> bool:
         return self._finalized
+
+
+class PaperToolset:
+    """Whitelisted paper retrieval tools (ARCHITECTURE.md §9.3 `paper.*`, §8.4).
+
+    `paper.search(query)` / `paper.fetch(id)` over arXiv; each result includes the canonical
+    citation string the directive requires the agent to record (attribution, §8.4). Egress is
+    whitelist-gated (§8.3); a blocked/failed fetch returns a structured error rather than raising
+    so the agent can read it and move on.
+    """
+
+    def __init__(self, source: PaperSource | None = None):
+        self.source = source or PaperSource()
+
+    def search(self, query: str, limit: int = 5) -> dict[str, Any]:
+        try:
+            return {"ok": True, "results": [r.to_dict() for r in self.source.search(query, limit=limit)]}
+        except (EgressBlocked, OSError) as exc:
+            return {"ok": False, "error": str(exc)}
+
+    def fetch(self, arxiv_id: str) -> dict[str, Any]:
+        try:
+            ref = self.source.fetch(arxiv_id)
+        except (EgressBlocked, OSError) as exc:
+            return {"ok": False, "error": str(exc)}
+        if ref is None:
+            return {"ok": False, "error": f"no arXiv paper found for {arxiv_id!r}"}
+        return {"ok": True, **ref.to_dict()}
+
+
+class DataToolset:
+    """Whitelisted dataset retrieval tools (ARCHITECTURE.md §9.3 `data.*`, §8.3).
+
+    `data.search(query)` / `data.fetch(dataset_id, revision)` over the HF Hub; each result
+    includes the dataset card + license string so the agent records provenance (`datasets_used`,
+    §8.3). No scraping tool is provided by design. Egress is whitelist-gated; errors are returned
+    structured, not raised.
+    """
+
+    def __init__(self, source: DataSource | None = None):
+        self.source = source or DataSource()
+
+    def search(self, query: str, limit: int = 5) -> dict[str, Any]:
+        try:
+            return {"ok": True, "results": [r.to_dict() for r in self.source.search(query, limit=limit)]}
+        except (EgressBlocked, OSError) as exc:
+            return {"ok": False, "error": str(exc)}
+
+    def fetch(self, dataset_id: str, revision: str = "main") -> dict[str, Any]:
+        try:
+            ref = self.source.fetch(dataset_id, revision)
+        except (EgressBlocked, OSError) as exc:
+            return {"ok": False, "error": str(exc)}
+        if ref is None:
+            return {"ok": False, "error": f"no dataset found for {dataset_id!r}"}
+        return {"ok": True, **ref.to_dict()}
 
 
 class CostToolset:

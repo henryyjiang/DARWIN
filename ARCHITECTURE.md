@@ -810,7 +810,7 @@ Context a new session needs that isn't obvious from the repo alone:
 
 **Tooling.** The project standardizes on **`uv`** (the Windows host has no bare `python`; uv
 manages CPython 3.14.4). Layout/deps in `pyproject.toml`. Run the suite with:
-`uv run --python 3.14 --extra dev python -m pytest -q` — **226 tests passing**. (If `uv`'s
+`uv run --python 3.14 --extra dev python -m pytest -q` — **244 tests passing**. (If `uv`'s
 resolver chokes on the `local` extra — an upstream `openhands-ai`/Python-version drift unrelated
 to DARWIN — run the existing venv directly: `.venv/Scripts/python.exe -m pytest -q`.)
 
@@ -853,8 +853,18 @@ importable and cross-platform.
   writer.
 - ✅ **MCP `cost.*` tools** (`cost_report` / `cost_get_budget`) landed with Phase 3, bound to
   an offspring's generation/model when a mutation context + cost ledger are attached.
-- ⏳ **Not yet built:** the MCP `paper.*` and `data.*` tools (each waits on its backing
-  subsystem — the HF/arXiv whitelists). (`smoke.run` + `finalize` landed with Phase 2.)
+- ✅ **MCP `paper.*` and `data.*` tools** (§9.3/§8.3/§8.4) now built on a new `darwin/sources/`
+  retrieval subsystem: a default-deny egress **whitelist** (`whitelist.py` — arXiv / Semantic
+  Scholar / HF Hub only, all other hosts raise `EgressBlocked`) + an injectable, whitelist-gated
+  `Transport` (stdlib `urllib` default, fakeable); `papers.py` (`PaperSource` over arXiv, returns
+  the canonical **citation string** for §8.4 attribution) and `datasets.py` (`DataSource` over the
+  HF Hub, returns the dataset **card + license** + an `id@revision` pin for §8.3 provenance — no
+  scraping tool by design). Exposed as `paper_search`/`paper_fetch`/`data_search`/`data_fetch`
+  (`PaperToolset`/`DataToolset` in `darwin/mcp/tools.py`, registered in the server behind
+  `enable_retrieval=True`; egress is enforced at call time so registration is network-free). Parse
+  cores are pure and unit-tested offline against canned arXiv-Atom / HF-JSON responses. (`smoke.run`
+  + `finalize` landed with Phase 2.) The mutation directive already instructs agents to use these
+  and record attribution; the §8.4 audit verifies they did.
 
 **Phase 2 — backend-agnostic core complete; live containerized run deferred.**
 - ✅ The §4.2 lifecycle as a backend-agnostic core in `darwin/mutation_agent/`:
