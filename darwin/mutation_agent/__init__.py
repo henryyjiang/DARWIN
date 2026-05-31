@@ -27,7 +27,12 @@ from darwin.mutation_agent.backend import (
     MutationResult,
 )
 from darwin.mutation_agent.runner import run_mutation_window
-from darwin.mutation_agent.vllm_serving import VLLMServeConfig, build_serve_command
+from darwin.mutation_agent.vllm_serving import (
+    VLLMServeConfig,
+    VLLMServer,
+    VLLMServerError,
+    build_serve_command,
+)
 from darwin.mutation_agent.local_backend import (
     HarnessConfig,
     LocalMutationBackend,
@@ -46,6 +51,8 @@ __all__ = [
     "MutationResult",
     "run_mutation_window",
     "VLLMServeConfig",
+    "VLLMServer",
+    "VLLMServerError",
     "build_serve_command",
     "HarnessConfig",
     "LocalMutationBackend",

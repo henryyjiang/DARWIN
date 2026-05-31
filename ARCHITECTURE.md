@@ -806,11 +806,11 @@ Context a new session needs that isn't obvious from the repo alone:
 ### 10.3 Implementation status (living section)
 
 > Updated as phases land. Records what *exists in the repo* vs. what the spec above describes.
-> **As of 2026-05-31 (Phases 6–7 cores landed).**
+> **As of 2026-05-31 (Phases 0–7 cores + live-infra cores landed; only live seams remain).**
 
 **Tooling.** The project standardizes on **`uv`** (the Windows host has no bare `python`; uv
 manages CPython 3.14.4). Layout/deps in `pyproject.toml`. Run the suite with:
-`uv run --python 3.14 --extra dev python -m pytest -q` — **244 tests passing**. (If `uv`'s
+`uv run --python 3.14 --extra dev python -m pytest -q` — **275 tests passing**. (If `uv`'s
 resolver chokes on the `local` extra — an upstream `openhands-ai`/Python-version drift unrelated
 to DARWIN — run the existing venv directly: `.venv/Scripts/python.exe -m pytest -q`.)
 
@@ -1026,6 +1026,30 @@ importable and cross-platform.
   retry policy exists in `run_finetune_job`, but actual re-provisioning is live GPU infra); and a
   richer live dashboard surface (the markdown reader is the current "simple run dashboard" §9.5).
 
+**Post-phase work — live-infra *cores* landed (provisioning, sandbox, retrieval, entrypoints).**
+With all phase cores done, the remaining "needs infra" items were implemented down to their last
+irreducibly-live seam (each behind an injected interface, so the orchestration around it is tested):
+- ✅ **MCP `paper.*`/`data.*` + `darwin/sources/`** (§8.3/§8.4/§9.3) — see the Phase 1 block above;
+  the whitelisted arXiv + HF Hub retrieval that closes the agent's only web-access path.
+- ✅ **Container/safety layer** (`darwin/sandbox/`, §8): `ContainerSpec` + `build_docker_run_args`
+  (refuses the Docker socket, no `--privileged`, network policy none/whitelist/open, resource caps)
+  + role constructors for the three §8.5 images + `DockerContainerRunner`; the three **Dockerfiles**
+  and the egress-network setup script under `containers/`.
+- ✅ **Lambda provisioning** (`darwin/finetune/lambda_api.py` + a real `LambdaFinetuneBackend`, §5.3):
+  the Lambda Cloud REST client (launch/poll/terminate) behind an injectable HTTP fn, and the
+  provision→run→**always-terminate** orchestration; the only live seam is the SSH `job_runner`
+  (inject one). API failures → `failure_mode="infra"`.
+- ✅ **vLLM launcher** (`VLLMServer`, §4.6): `Popen` + readiness-poll + terminate, injectable
+  `popen`/`readiness_check`/`sleep`/`clock`; defaults shell out to real `vllm` + localhost HTTP.
+- ✅ **Reference entrypoints** — `darwin/finetune/entrypoint.py` (QLoRA/LoRA recipe; pure
+  config/LoRA/BnB/TrainingArguments builders + safe-mode lever tested, heavy training lazy) and
+  `darwin/bench/entrypoint.py` (env→config, suite dispatch/aggregation, scores handoff tested,
+  model+harness load lazy) — the default genomes the images run.
+- ⏳ **Still genuinely live (needs GPU/Docker/live API + heavy deps):** the OpenHands
+  `harness_runner` session for `local` mutation; the `claude-agent-sdk` session for `claude`
+  mutation; the Lambda SSH `job_runner` (sync genome → run image → fetch adapter); the actual GPU
+  training / benchmark-harness execution inside the images; and the in-loop infra re-provision retry.
+
 **Invariants already enforced in code:** only the controller patches post-benchmark fields
 (§7.2); there is no agent-facing global-memory write path (§7.3); the global-memory pass is
 the only sanctioned writer of global memory; finetuning runs only on a green commit (the
@@ -1035,21 +1059,21 @@ launches without killing in-flight jobs (§5.4); the GA keeps population size + 
 across generations (5 survivors carried with cached scores + 5 offspring filling culled slots,
 §3.2).
 
-**Resume point (next session) — all phase *cores* (0–7) are built; what remains is the live
-infra/data plane.** The full loop, both mutation backends, the cost/finetune/bench cores, the
-§6.4 anti-gaming + §3.4 diversity producers, and the Phase 7 hardening/observability cores are in
-the repo and unit-tested without Docker/GPU/Claude. The remaining work is the deferred *live*
-substrate, which several phases share:
-- **Lambda GPU plane** — real provisioning + the `darwin-finetune` image; the live infra-failure
-  re-provision/retry in the loop (today `infra_failed` is no-score); the 32B scale-up consuming
-  `FinetuneConfig.base_model`/`sharding`/`num_gpus`.
-- **Zero-egress eval plane** — the `darwin-eval` container + real benchmark-harness adapters
-  (`darwin/bench/swe_bench/` feeds the coding slice); the host-only held-out eval items + the OOD
-  probe run, injected into `LocalAntiGamingScanner` (`eval_items_provider`/`ood_probe`) to turn on
-  the live contamination + generalization-gap checks (the genome-diff review already runs).
-- **Live agent plane** — the Docker `darwin-agent` container + `claude-agent-sdk` for a real
-  multi-hour Claude mutation window, and a live vLLM serve + OpenHands session for the `local`
-  backend (Appendix A multi-hour-stability question).
+**Resume point (next session) — every *core* is built and the live-infra paths are wired down to
+their last live seam; what remains needs real GPUs/Docker/live APIs + the heavy ML deps.** The
+full loop, both mutation backends, cost/finetune/bench, §6.4 anti-gaming + §3.4 diversity, the
+Phase 7 hardening/observability cores, and the live-infra cores (sandbox + Dockerfiles, Lambda
+client + backend, vLLM launcher, retrieval tools, reference entrypoints) are all in the repo and
+unit-tested without Docker/GPU/Claude. To take it live, implement the injected live seams + stand
+up the substrate:
+- **Inject the live seams:** the Lambda `job_runner` (SSH → sync genome → run `darwin-finetune`
+  image → fetch adapter); the OpenHands `harness_runner` (drive the local model over the vLLM
+  endpoint with the `darwin-mcp` tools); confirm the `claude-agent-sdk` session path; the
+  `LocalAntiGamingScanner` `eval_items_provider`/`ood_probe` (host-only eval data + OOD probe).
+- **Stand up the substrate:** build the three images; create the `darwin-egress` whitelist network
+  (`containers/setup_whitelist_network.sh`); bake the base-model snapshot into `darwin-eval`; wire
+  the in-loop infra-failure re-provision/retry; the 32B scale-up via
+  `FinetuneConfig.base_model`/`sharding`/`num_gpus`; validate a multi-hour run end-to-end.
 - **Config to flip once baselines are understood:** enable `ga.diversity_pick` (optionally swap
   `genome_code_distance` for an embedding distance, Appendix A); set `cost.gen_budget_usd` /
   `per_job_*` caps; choose `antigaming.genome_reviewer` (`claude` default vs. `rule` for
