@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Literal
 
 from darwin.config import FinetuneMethod
+from darwin.finetune.sizing import RunSize
 
 # Final classification of a finetune job (§5.3).
 FinetuneStatus = Literal["ok", "finetune_failed", "infra_failed"]
@@ -49,6 +50,9 @@ class FinetuneJob:
     gpu_rate_usd_per_h: float = 1.10  # $/hr for the provisioned instance (§5.4)
     per_job_cap_usd: float | None = None  # runaway-cost kill -> finetune_failed (§5.3)
     per_job_max_h: float | None = None  # runaway-time kill (backend-enforced timeout)
+    # Run size (post-expansion params + token budget) for runtime GPU allocation (§5.3). When
+    # set, the Lambda backend sizes the instance/GPU count from this instead of a fixed default.
+    run_size: RunSize | None = None
 
 
 @dataclass

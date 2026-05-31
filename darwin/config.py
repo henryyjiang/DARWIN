@@ -80,7 +80,14 @@ class FinetuneConfig:
     # single GPU (`sharding="none"`, `num_gpus=1`) stays the default until Phase 4 is validated.
     base_model: str = "Qwen/Qwen2.5-Coder-32B"  # §5.1 target (cheapest strong coder at build)
     sharding: Sharding = "none"  # tensor/pipeline split when not using QLoRA single-GPU
-    num_gpus: int = 1  # GPUs per offspring finetune (parallel per-offspring GPUs, §5.3)
+    num_gpus: int = 1  # static fallback GPUs/offspring when run-size sizing isn't used (§5.3)
+    # Parameter-scaling targets (§5.3): the population may grow the model via depth expansion
+    # and MoE upcycling, so the *effective* param count after expansion drives runtime GPU
+    # allocation (darwin/finetune/sizing.py), not a fixed instance. `target_params_b` seeds the
+    # RunSize; mutators raise it when their genome expands the model.
+    target_params_b: float = 32.0  # effective billions of params (base before expansion)
+    max_train_tokens: float = 250_000_000_000  # per-run training-token ceiling (250B)
+    dynamic_gpu_allocation: bool = True  # size the Lambda instance from the run size at launch
 
 
 @dataclass

@@ -147,16 +147,29 @@ class LambdaFinetuneBackend:
     job_runner: LambdaJobRunner = _deferred_job_runner
     wait_timeout_s: float = 1200.0
     clock: Callable[[], float] | None = None
+    # GPU catalog for runtime sizing; when a job carries a RunSize the instance + GPU count are
+    # chosen from this instead of the static `instance_type`/`num_gpus` defaults (§5.3 scaling).
+    catalog: tuple = ()
+
+    def _allocation(self, job: FinetuneJob) -> tuple[str, int]:
+        """Pick (instance_type, num_gpus): dynamic from the run size, else the static default."""
+        if job.run_size is None:
+            return self.instance_type, self.num_gpus
+        from darwin.finetune.sizing import LAMBDA_CATALOG, plan_instance
+
+        plan = plan_instance(job.run_size, self.catalog or LAMBDA_CATALOG)
+        return plan.instance_type, plan.num_gpus
 
     def run(self, job: FinetuneJob, *, safe_mode: bool = False) -> FinetuneOutcome:
         from darwin.finetune.lambda_api import LambdaApiError, wait_until_active
 
         clock = self.clock or time.monotonic
+        instance_type, num_gpus = self._allocation(job)  # runtime GPU allocation (§5.3)
         instance_ids: list[str] = []
         start = clock()
         try:
             instance_ids = self.client.launch(
-                instance_type=self.instance_type,
+                instance_type=instance_type,
                 region=self.region,
                 ssh_key_names=list(self.ssh_key_names),
                 name=f"darwin-{job.offspring_id}",
@@ -168,7 +181,7 @@ class LambdaFinetuneBackend:
                 self.client, instance_ids[0], timeout_s=self.wait_timeout_s, clock=self.clock
             )
         except LambdaApiError as exc:
-            gpu_hours = (clock() - start) / 3600.0 * self.num_gpus
+            gpu_hours = (clock() - start) / 3600.0 * num_gpus
             self._safe_terminate(instance_ids)
             return FinetuneOutcome(False, gpu_hours, failure_mode="infra", log=str(exc))
 
@@ -178,7 +191,7 @@ class LambdaFinetuneBackend:
             self._safe_terminate(instance_ids)  # always terminate (cost guard, §5.4)
 
         if outcome.gpu_hours <= 0:  # bill active wall-clock x GPUs if the runner didn't
-            gpu_hours = (clock() - start) / 3600.0 * self.num_gpus
+            gpu_hours = (clock() - start) / 3600.0 * num_gpus
             outcome = FinetuneOutcome(
                 outcome.succeeded, gpu_hours, adapter_path=outcome.adapter_path,
                 failure_mode=outcome.failure_mode, log=outcome.log,

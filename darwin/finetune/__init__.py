@@ -34,6 +34,15 @@ from darwin.finetune.lambda_api import (
     parse_instance,
     wait_until_active,
 )
+from darwin.finetune.sizing import (
+    LAMBDA_CATALOG,
+    MAX_TRAIN_TOKENS,
+    GpuType,
+    InstancePlan,
+    RunSize,
+    estimate_vram_gb,
+    plan_instance,
+)
 from darwin.finetune.runner import run_finetune_job
 
 __all__ = [
@@ -52,5 +61,12 @@ __all__ = [
     "LambdaApiError",
     "parse_instance",
     "wait_until_active",
+    "RunSize",
+    "InstancePlan",
+    "GpuType",
+    "LAMBDA_CATALOG",
+    "MAX_TRAIN_TOKENS",
+    "estimate_vram_gb",
+    "plan_instance",
     "run_finetune_job",
 ]
