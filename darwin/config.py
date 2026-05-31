@@ -65,6 +65,9 @@ class CostConfig:
     gpu_rate_usd_per_h: float = 1.10
 
 
+Sharding = Literal["none", "tensor", "pipeline"]
+
+
 @dataclass
 class FinetuneConfig:
     """Finetuning method & LoRA defaults (§5, §10.1)."""
@@ -72,6 +75,12 @@ class FinetuneConfig:
     method: FinetuneMethod = "qlora_4bit"  # single GPU; avoid sharding until it works
     lora_rank: int = 16  # base genome default the agent may change
     lora_alpha: int = 32
+    # Scale-up knobs (§5.3 / Phase 6): the target base coder and how a >single-GPU model is
+    # split. Consumed by the *live* Lambda finetune backend (deferred infra); QLoRA 4-bit on a
+    # single GPU (`sharding="none"`, `num_gpus=1`) stays the default until Phase 4 is validated.
+    base_model: str = "Qwen/Qwen2.5-Coder-32B"  # §5.1 target (cheapest strong coder at build)
+    sharding: Sharding = "none"  # tensor/pipeline split when not using QLoRA single-GPU
+    num_gpus: int = 1  # GPUs per offspring finetune (parallel per-offspring GPUs, §5.3)
 
 
 @dataclass
@@ -85,6 +94,25 @@ class BenchmarkConfig:
 
 
 @dataclass
+class AntiGamingConfig:
+    """Anti-gaming heuristics (§6.4). Producers of the `antigaming_flags` fed to fitness (§6.3).
+
+    `enabled` gates the whole scan; individual checks additionally no-op when their inputs are
+    absent (no eval items => no contamination scan; no OOD probe => no generalization-gap check),
+    so the live infra (host-only eval data, the OOD probe run) can land incrementally.
+    """
+
+    enabled: bool = True
+    ngram_n: int = 8  # word n-gram width for the contamination scan
+    contamination_min_overlap: int = 1  # shared n-grams that trip a contamination flag
+    contamination_max_flags: int = 20  # cap on contamination flags (bounded fitness hit)
+    max_generalization_gap: float = 0.25  # held-out minus OOD probe that trips a gap flag
+    # genome-diff reviewer (§6.4): "claude" (higher recall, default per §4.7), "rule"
+    # (no API; used under strict-local), or "none" (skip the diff review).
+    genome_reviewer: Literal["claude", "rule", "none"] = "claude"
+
+
+@dataclass
 class DarwinConfig:
     """Top-level run configuration. Groups the sub-configs above."""
 
@@ -95,6 +123,7 @@ class DarwinConfig:
     cost: CostConfig = field(default_factory=CostConfig)
     finetune: FinetuneConfig = field(default_factory=FinetuneConfig)
     benchmark: BenchmarkConfig = field(default_factory=BenchmarkConfig)
+    antigaming: AntiGamingConfig = field(default_factory=AntiGamingConfig)
 
     def to_dict(self) -> dict:
         return asdict(self)

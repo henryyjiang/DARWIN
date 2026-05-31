@@ -24,11 +24,12 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import Callable, Protocol
 
 from darwin.bench.fitness import reduce_fitness, survivor_baseline
 from darwin.bench.rotation import held_out_slice
 from darwin.config import DarwinConfig
+from darwin.controller.diversity import genome_code_distance
 from darwin.controller.ga import OffspringPlan, pair_offspring, select_survivors
 from darwin.controller.population import Model, Population
 from darwin.controller.state import (
@@ -36,6 +37,7 @@ from darwin.controller.state import (
     GenerationStateStore,
     OffspringState,
 )
+from darwin.antigaming import AntiGamingReport
 from darwin.cost import CostLedger
 from darwin.global_memory import Synthesizer, run_global_memory_pass
 from darwin.memory import MemoryStore
@@ -74,6 +76,19 @@ class GenerationOps(Protocol):
     ) -> dict[str, float]: ...
 
 
+class AntiGamingScanner(Protocol):
+    """Runs the §6.4 anti-gaming scan for one finetuned+benchmarked offspring.
+
+    Returns the `AntiGamingReport` whose `count` the controller feeds to fitness as
+    `antigaming_flags` (§6.3). Injected into the controller (default None => disabled, flags stay
+    0); the concrete `LocalAntiGamingScanner` (`antigaming_ops.py`) wires the real producers.
+    """
+
+    def scan(
+        self, *, offspring: Model, state: OffspringState, slice_id: int, generation: int
+    ) -> AntiGamingReport: ...
+
+
 @dataclass
 class MutateOutcome:
     """What the controller records from the MUTATE stage."""
@@ -104,7 +119,11 @@ class Controller:
     state_store: GenerationStateStore
     ops: GenerationOps
     synthesizer: Synthesizer | None = None  # global-memory pass writer (§7.4); injected/fake
+    antigaming: "AntiGamingScanner | None" = None  # §6.4 scan; None => disabled (flags stay 0)
     enable_global_memory: bool = True
+    # §3.4 diversity safeguard distance fn; used only when `ga.diversity_pick` is on. Defaults
+    # to the code n-gram distance (`genome_code_distance`); inject an embedding-based one later.
+    diversity_fn: Callable[[Model, Model], float] | None = None
     rng: random.Random = field(default_factory=random.Random)
 
     # ------------------------------------------------------------------ public loop
@@ -164,6 +183,9 @@ class Controller:
             population.models,
             self.config.ga.num_survivors,
             diversity_pick=self.config.ga.diversity_pick,
+            diversity_fn=(self.diversity_fn or genome_code_distance)
+            if self.config.ga.diversity_pick
+            else None,
         )
         survivor_names = [s.name for s in survivors]
         # offspring fill the culled (non-survivor) slots, keeping population size + names stable
@@ -259,6 +281,19 @@ class Controller:
                 off.scores = {}
             off.benchmark_done = True
 
+        if not off.antigaming_done:
+            # Only scan offspring that will actually be ranked on merit; a finetune_failed recipe
+            # already gets floor fitness (§5.3), so skip the (possibly Claude-backed) scan there.
+            if self.antigaming is not None and off.finetune_status == "ok":
+                report = self.antigaming.scan(
+                    offspring=offspring_model,
+                    state=off,
+                    slice_id=slice_id,
+                    generation=generation,
+                )
+                off.antigaming_flags = report.count
+            off.antigaming_done = True
+
     # ------------------------------------------------------------------ AGGREGATE_FITNESS
     def _aggregate_fitness(self, state: GenerationState, survivors: list[Model]) -> None:
         baseline = survivor_baseline([s.scores for s in survivors if s.scores])
@@ -268,6 +303,7 @@ class Controller:
                 scores=off.scores,
                 baseline=baseline,
                 cost_usd=off.cost_usd,
+                antigaming_flags=off.antigaming_flags,
                 mutation_failed=off.mutation_failed,
                 finetune_failed=failed,
                 config=self.config.fitness,

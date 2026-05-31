@@ -60,6 +60,10 @@ class OffspringState:
     benchmark_done: bool = False
     scores: dict[str, float] = field(default_factory=dict)
 
+    # ANTI-GAMING (§6.4) — `antigaming_flags` is the penalty weight fed to fitness (§6.3)
+    antigaming_done: bool = False
+    antigaming_flags: int = 0
+
     # AGGREGATE_FITNESS (§6.3)
     fitness: float | None = None
     cost_usd: float = 0.0

@@ -28,16 +28,29 @@ from darwin.controller.state import (
     PHASE_ORDER,
 )
 from darwin.controller.controller import (
+    AntiGamingScanner,
     Controller,
     FinetuneOutcomeView,
     GenerationOps,
     MutateOutcome,
 )
 from darwin.controller.ops import LocalGenerationOps
+from darwin.controller.antigaming_ops import (
+    LocalAntiGamingScanner,
+    genome_mutation_diff,
+)
+from darwin.controller.diversity import (
+    genome_code_distance,
+    jaccard_distance,
+    read_genome_source,
+)
 
 __all__ = [
     "Model",
     "Population",
+    "genome_code_distance",
+    "jaccard_distance",
+    "read_genome_source",
     "OffspringPlan",
     "pair_offspring",
     "rank_models",
@@ -48,7 +61,10 @@ __all__ = [
     "PHASE_ORDER",
     "Controller",
     "GenerationOps",
+    "AntiGamingScanner",
     "MutateOutcome",
     "FinetuneOutcomeView",
     "LocalGenerationOps",
+    "LocalAntiGamingScanner",
+    "genome_mutation_diff",
 ]

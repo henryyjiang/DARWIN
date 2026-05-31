@@ -806,11 +806,13 @@ Context a new session needs that isn't obvious from the repo alone:
 ### 10.3 Implementation status (living section)
 
 > Updated as phases land. Records what *exists in the repo* vs. what the spec above describes.
-> **As of 2026-05-31.**
+> **As of 2026-05-31 (Phase 6 cores landed).**
 
 **Tooling.** The project standardizes on **`uv`** (the Windows host has no bare `python`; uv
 manages CPython 3.14.4). Layout/deps in `pyproject.toml`. Run the suite with:
-`uv run --python 3.14 --extra dev python -m pytest -q` — **160 tests passing**.
+`uv run --python 3.14 --extra dev python -m pytest -q` — **207 tests passing**. (If `uv`'s
+resolver chokes on the `local` extra — an upstream `openhands-ai`/Python-version drift unrelated
+to DARWIN — run the existing venv directly: `.venv/Scripts/python.exe -m pytest -q`.)
 
 **Code layout (actual).** All Python lives under a single importable `darwin/` package
 (`darwin.config`, `darwin.controller`, `darwin.mutation_agent`, `darwin.finetune`,
@@ -947,7 +949,46 @@ importable and cross-platform.
   OpenHands harness session against it; validating multi-hour stability of a 32B model on the
   harness (Appendix A open question).
 
-**Phases 6–7 — not started.**
+**Phase 6 — anti-gaming + diversity cores complete; live eval-data/GPU producers deferred.**
+- ✅ **Anti-gaming heuristics** (`darwin/antigaming/`, §6.4) as fitness-penalty *producers*:
+  `report.py` (`AntiGamingFlag`/`AntiGamingReport`; `.count` is the integer fed to fitness);
+  `contamination.py` (word n-gram overlap of the genome's data/source vs. held-out eval items,
+  capped); `genome_review.py` (a `GenomeReviewer` interface with a no-API `RuleBasedGenomeReviewer`
+  — regex flags for benchmark-name special-casing / eval-harness detection / hardcoded answer
+  tables / per-item id branching — and a `ClaudeGenomeReviewer` mirroring `ClaudeSynthesizer`:
+  lazy SDK, structured outputs, prompt caching; only *added* diff lines are reviewed so reverting
+  never trips a flag); `plausibility.py` (generalization-gap: a held-out score that overshoots an
+  OOD probe by `max_gap` flags, severity scaling with the gap); `scan.py`
+  (`run_antigaming_scan` composing the three — each check no-ops when its inputs are absent).
+  All pure cores (n-gram math, rule patterns, gap math, prompt build/parse) are unit-tested
+  without the network.
+- ✅ **Wired into fitness** (§6.3): `AntiGamingConfig` (enable, n-gram width, thresholds,
+  reviewer choice `claude`/`rule`/`none`) added to `DarwinConfig`; `OffspringState` carries
+  `antigaming_done`/`antigaming_flags` (resumable); the controller gained an injectable
+  `AntiGamingScanner` seam (default None => disabled, flags stay 0) run per offspring after
+  benchmark (gated to scored offspring), and `reduce_fitness` now receives `antigaming_flags`.
+  `LocalAntiGamingScanner` (`controller/antigaming_ops.py`) wires the real producers: the
+  mutator's `root..HEAD` genome diff to the reviewer, the genome source as contamination
+  `data_texts`, and **injected** `eval_items_provider` (host-only eval items, §6.2) + `ood_probe`
+  (both absent today => only the no-infra genome-diff review runs). Verified end-to-end: a
+  benchmark-gaming offspring is penalized through the full controller loop; no scanner => no flags.
+- ✅ **Diversity safeguard** (§3.4): the controller now actually passes a `diversity_fn` into
+  `select_survivors` when `ga.diversity_pick` is on (it previously passed none, so the safeguard
+  was dead). The default `genome_code_distance` (`controller/diversity.py`) is a dependency-free
+  Jaccard distance over genome-source token n-grams (real code-embedding distance deferred,
+  Appendix A); the seam takes any `(Model, Model) -> float` so an embedding model drops in later.
+  Still **off by default** until baseline behavior is understood.
+- ✅ **Scale-up config surface** (§5.3/§5.1): `FinetuneConfig` gained `base_model`
+  (`Qwen/Qwen2.5-Coder-32B`), `sharding` (`none`/`tensor`/`pipeline`), and `num_gpus` — knobs the
+  *live* Lambda finetune backend will consume; defaults stay QLoRA-4-bit single-GPU until the
+  loop is validated.
+- ⏳ **Deferred (needs infra/data):** the *live* contamination scan + generalization-gap check
+  (both need the host-only held-out eval items / an OOD probe run in the zero-egress eval
+  container, §6.2 — same deferral as the rest of the eval infra); validating the Claude genome
+  reviewer against real diffs; and the actual move to the 32B coder with tensor/pipeline sharding
+  on parallel per-offspring Lambda GPUs.
+
+**Phase 7 — not started.**
 
 **Invariants already enforced in code:** only the controller patches post-benchmark fields
 (§7.2); there is no agent-facing global-memory write path (§7.3); the global-memory pass is
@@ -958,15 +999,20 @@ launches without killing in-flight jobs (§5.4); the GA keeps population size + 
 across generations (5 survivors carried with cached scores + 5 offspring filling culled slots,
 §3.2).
 
-**Resume point (next session) — Phase 6 (anti-gaming, diversity, scale-up).** With the loop and
-both backends built, add the §6.4 anti-gaming heuristics: held-out/rotating evals are wired
-(§6.2), so next is the **contamination scan** (n-gram overlap of the genome's data scripts vs.
-eval items), the **genome-diff hack inspection** (lightweight Claude/rule-based review flagging
-benchmark special-casing — feeds `λ_penalty`), and the **plausibility/generalization-gap** check;
-then the §3.4 diversity safeguard (enable the already-built `diversity_pick` with a
-code-embedding distance fn); then scale-up to the 32B coder + sharding/QLoRA. The anti-gaming
-`antigaming_flags` already feed `reduce_fitness` (§6.3) — wire the producers. Work continues on
-branch `v2-foundation`. Run tests with `uv run --python 3.14 --extra dev python -m pytest -q`.
+**Resume point (next session) — Phase 7 (hardening & observability), plus landing Phase 6's
+deferred live producers.** Phase 6's anti-gaming + diversity *cores* are built and wired into
+fitness (above); what remains for Phase 6 is **infra/data-bound**, so it lands together with the
+rest of the deferred eval/GPU infra: the **live contamination scan + generalization-gap check**
+(both need the host-only held-out eval items and an OOD probe run in the zero-egress eval
+container — inject `eval_items_provider`/`ood_probe` into `LocalAntiGamingScanner` once that data
+plane exists), and the **32B scale-up** (`FinetuneConfig.base_model`/`sharding`/`num_gpus` knobs
+exist; the live Lambda backend consumes them). Phase 7 proper: crash/resume coverage, cost
+guardrails, the run dashboard reading `runs/gen_<n>/`, and an audit of attribution enforcement
+(§9.5/§10). Note: the §3.4 `diversity_pick` is built + wired but **off by default** — enable it
+in config once baseline GA behavior is understood, optionally swapping the default
+`genome_code_distance` for an embedding-based distance (Appendix A). Work continues on branch
+`v2-foundation`. Run tests with `.venv/Scripts/python.exe -m pytest -q` (or the `uv` command if
+the resolver is healthy).
 
 ---
 
