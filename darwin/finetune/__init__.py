@@ -24,7 +24,15 @@ from darwin.finetune.job import (
 from darwin.finetune.backend import (
     FinetuneBackend,
     LambdaFinetuneBackend,
+    LambdaJobRunner,
     SubprocessFinetuneBackend,
+)
+from darwin.finetune.lambda_api import (
+    LambdaApiError,
+    LambdaClient,
+    LambdaInstance,
+    parse_instance,
+    wait_until_active,
 )
 from darwin.finetune.runner import run_finetune_job
 
@@ -38,5 +46,11 @@ __all__ = [
     "FinetuneBackend",
     "SubprocessFinetuneBackend",
     "LambdaFinetuneBackend",
+    "LambdaJobRunner",
+    "LambdaClient",
+    "LambdaInstance",
+    "LambdaApiError",
+    "parse_instance",
+    "wait_until_active",
     "run_finetune_job",
 ]

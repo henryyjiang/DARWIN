@@ -22,9 +22,12 @@ import os
 import subprocess
 import time
 from dataclasses import dataclass
-from typing import Protocol
+from typing import TYPE_CHECKING, Callable, Protocol
 
 from darwin.finetune.job import FinetuneJob, FinetuneOutcome
+
+if TYPE_CHECKING:
+    from darwin.finetune.lambda_api import LambdaClient, LambdaInstance
 
 # Default substrings that mark a recipe-level failure in a training log (§5.3). Case-insensitive.
 _OOM_PATTERNS = ("out of memory", "cuda out of memory", "oom", "outofmemoryerror")
@@ -98,27 +101,94 @@ class SubprocessFinetuneBackend:
         return FinetuneOutcome(False, gpu_hours, failure_mode=mode, log=log)
 
 
-@dataclass
-class LambdaFinetuneBackend:
-    """Live Lambda Labs GPU finetune backend (§5.3) — scaffold.
+class LambdaJobRunner(Protocol):
+    """Runs the finetune job on a provisioned instance and returns its raw outcome (§5.3).
 
-    The live path: request a GPU instance via Lambda's API, push the green genome, run the
-    genome's entrypoint inside the `darwin-finetune` image (CUDA + PEFT/LoRA + base model,
-    §8.5), poll to completion, fetch the adapter, and report real GPU-hours (wall-clock x GPUs)
-    for the cost ledger. Infra preemption surfaces as `failure_mode="infra"` so the runner
-    classifies it `infra_failed` (resume/re-provision, §5.3) rather than penalizing the recipe.
-
-    Deferred until the Lambda API client + image land; not importable infra is required to run
-    the rest of Phase 3.
+    This is the one irreducibly-live seam: it SSHes to `instance.ip`, syncs the green genome,
+    runs the genome's entrypoint in the `darwin-finetune` image, and fetches the adapter back to
+    `job.adapter_out`. Injected so `LambdaFinetuneBackend`'s provision->run->terminate
+    orchestration is testable with a fake; the default raises with the live-path note.
     """
 
-    api_key: str | None = None
+    def __call__(
+        self, instance: "LambdaInstance", job: FinetuneJob, *, safe_mode: bool
+    ) -> FinetuneOutcome: ...
+
+
+def _deferred_job_runner(instance, job, *, safe_mode):  # pragma: no cover - live path
+    raise NotImplementedError(
+        "LambdaFinetuneBackend needs a job_runner that SSHes to the instance, runs the "
+        "darwin-finetune image, and fetches the adapter. Inject one; the API/lifecycle "
+        "orchestration around it is implemented and tested."
+    )
+
+
+@dataclass
+class LambdaFinetuneBackend:
+    """Live Lambda Labs GPU finetune backend (§5.3).
+
+    Orchestration (implemented + tested via injected fakes): launch a GPU instance via the
+    Lambda API, poll until active, run the job on it (the injected `job_runner`), and **always
+    terminate** the instance afterward (cost guard — a leaked instance bills indefinitely). The
+    instance's active wall-clock x `num_gpus` is reported as GPU-hours when the runner doesn't
+    measure it itself. Any Lambda API / provisioning failure surfaces as `failure_mode="infra"`
+    so the runner classifies it `infra_failed` (resume/re-provision, §5.3), never penalizing the
+    recipe.
+
+    The only live piece is `job_runner` (SSH + image run + adapter fetch), injected so everything
+    around it is testable; the default raises with the live-path note.
+    """
+
+    client: "LambdaClient"
     instance_type: str = "gpu_1x_a100"
-    region: str | None = None
+    region: str = "us-east-1"
+    ssh_key_names: tuple[str, ...] = ()
+    num_gpus: int = 1
+    job_runner: LambdaJobRunner = _deferred_job_runner
+    wait_timeout_s: float = 1200.0
+    clock: Callable[[], float] | None = None
 
     def run(self, job: FinetuneJob, *, safe_mode: bool = False) -> FinetuneOutcome:
-        raise NotImplementedError(
-            "LambdaFinetuneBackend is scaffolded; the live GPU path lands with the Lambda "
-            "API client and the darwin-finetune image. Use SubprocessFinetuneBackend for the "
-            "single-GPU / proxy path."
-        )
+        from darwin.finetune.lambda_api import LambdaApiError, wait_until_active
+
+        clock = self.clock or time.monotonic
+        instance_ids: list[str] = []
+        start = clock()
+        try:
+            instance_ids = self.client.launch(
+                instance_type=self.instance_type,
+                region=self.region,
+                ssh_key_names=list(self.ssh_key_names),
+                name=f"darwin-{job.offspring_id}",
+            )
+            if not instance_ids:
+                return FinetuneOutcome(False, 0.0, failure_mode="infra",
+                                       log="Lambda launch returned no instance ids")
+            instance = wait_until_active(
+                self.client, instance_ids[0], timeout_s=self.wait_timeout_s, clock=self.clock
+            )
+        except LambdaApiError as exc:
+            gpu_hours = (clock() - start) / 3600.0 * self.num_gpus
+            self._safe_terminate(instance_ids)
+            return FinetuneOutcome(False, gpu_hours, failure_mode="infra", log=str(exc))
+
+        try:
+            outcome = self.job_runner(instance, job, safe_mode=safe_mode)
+        finally:
+            self._safe_terminate(instance_ids)  # always terminate (cost guard, §5.4)
+
+        if outcome.gpu_hours <= 0:  # bill active wall-clock x GPUs if the runner didn't
+            gpu_hours = (clock() - start) / 3600.0 * self.num_gpus
+            outcome = FinetuneOutcome(
+                outcome.succeeded, gpu_hours, adapter_path=outcome.adapter_path,
+                failure_mode=outcome.failure_mode, log=outcome.log,
+            )
+        return outcome
+
+    def _safe_terminate(self, instance_ids: list[str]) -> None:
+        if not instance_ids:
+            return
+        try:
+            self.client.terminate(instance_ids)
+        except Exception:  # pragma: no cover - best-effort cleanup
+            pass
