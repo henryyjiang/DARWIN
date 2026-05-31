@@ -38,7 +38,7 @@ from darwin.controller.state import (
     OffspringState,
 )
 from darwin.antigaming import AntiGamingReport
-from darwin.cost import CostLedger
+from darwin.cost import BudgetGuard, CostLedger
 from darwin.global_memory import Synthesizer, run_global_memory_pass
 from darwin.memory import MemoryStore
 
@@ -120,6 +120,7 @@ class Controller:
     ops: GenerationOps
     synthesizer: Synthesizer | None = None  # global-memory pass writer (§7.4); injected/fake
     antigaming: "AntiGamingScanner | None" = None  # §6.4 scan; None => disabled (flags stay 0)
+    budget: BudgetGuard | None = None  # §5.4 hard cap; None => uncapped (launch every offspring)
     enable_global_memory: bool = True
     # §3.4 diversity safeguard distance fn; used only when `ga.diversity_pick` is on. Defaults
     # to the code n-gram distance (`genome_code_distance`); inject an embedding-based one later.
@@ -258,14 +259,21 @@ class Controller:
             off.final_commit = res.final_commit
 
         if not off.finetune_done:
-            fres = self.ops.finetune(
-                offspring=offspring_model, state=off, generation=generation
-            )
+            # §5.4 hard cap: once the generation's budget is exhausted, launch no new finetunes.
+            # In-flight (already-launched, earlier) offspring are never killed — this loop is
+            # sequential, so checking before each launch models "let in-flight finish". A deferred
+            # offspring is carried unscored for re-attempt next generation if budget frees.
+            if self.budget is not None and self.budget.status(generation).exhausted:
+                off.finetune_status = "deferred"
+            else:
+                fres = self.ops.finetune(
+                    offspring=offspring_model, state=off, generation=generation
+                )
+                off.finetune_status = fres.status
+                off.adapter_path = str(fres.adapter_path) if fres.adapter_path else None
+                off.cost_usd += fres.cost_usd
+                offspring_model.adapter_path = fres.adapter_path
             off.finetune_done = True
-            off.finetune_status = fres.status
-            off.adapter_path = str(fres.adapter_path) if fres.adapter_path else None
-            off.cost_usd += fres.cost_usd
-            offspring_model.adapter_path = fres.adapter_path
 
         if not off.benchmark_done:
             if off.finetune_status == "ok":
@@ -298,6 +306,12 @@ class Controller:
     def _aggregate_fitness(self, state: GenerationState, survivors: list[Model]) -> None:
         baseline = survivor_baseline([s.scores for s in survivors if s.scores])
         for off in state.offspring:
+            if off.finetune_status == "deferred":
+                # never launched (budget cap, §5.4): unscored, not a recipe failure -> no floor.
+                # Carried into the next population to be re-attempted if budget frees.
+                off.fitness = None
+                self._patch_memory(off)
+                continue
             failed = off.finetune_status in ("finetune_failed", "infra_failed")
             fitness = reduce_fitness(
                 scores=off.scores,

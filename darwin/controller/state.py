@@ -53,7 +53,8 @@ class OffspringState:
 
     # FINETUNE (§5)
     finetune_done: bool = False
-    finetune_status: str | None = None  # "ok" | "finetune_failed" | "infra_failed"
+    # "ok" | "finetune_failed" | "infra_failed" | "deferred" (budget cap hit, never launched, §5.4)
+    finetune_status: str | None = None
     adapter_path: str | None = None
 
     # BENCHMARK (§6)

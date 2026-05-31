@@ -806,11 +806,11 @@ Context a new session needs that isn't obvious from the repo alone:
 ### 10.3 Implementation status (living section)
 
 > Updated as phases land. Records what *exists in the repo* vs. what the spec above describes.
-> **As of 2026-05-31 (Phase 6 cores landed).**
+> **As of 2026-05-31 (Phases 6–7 cores landed).**
 
 **Tooling.** The project standardizes on **`uv`** (the Windows host has no bare `python`; uv
 manages CPython 3.14.4). Layout/deps in `pyproject.toml`. Run the suite with:
-`uv run --python 3.14 --extra dev python -m pytest -q` — **207 tests passing**. (If `uv`'s
+`uv run --python 3.14 --extra dev python -m pytest -q` — **226 tests passing**. (If `uv`'s
 resolver chokes on the `local` extra — an upstream `openhands-ai`/Python-version drift unrelated
 to DARWIN — run the existing venv directly: `.venv/Scripts/python.exe -m pytest -q`.)
 
@@ -988,7 +988,33 @@ importable and cross-platform.
   reviewer against real diffs; and the actual move to the 32B coder with tensor/pipeline sharding
   on parallel per-offspring Lambda GPUs.
 
-**Phase 7 — not started.**
+**Phase 7 — hardening & observability cores complete; live re-provision deferred.**
+- ✅ **Hard budget guardrails** (§5.4): the `BudgetGuard` is wired into the controller as an
+  injectable `budget` (default None => uncapped). Before launching each offspring's finetune the
+  controller checks the generation's spend against `gen_budget_usd`; once exhausted it launches no
+  new finetunes and marks the remaining offspring `deferred` (a new `finetune_status`) — **unscored
+  (fitness None), not floor**, so a budget-skipped offspring isn't punished like a recipe failure
+  and is carried into the next population for re-attempt if budget frees. The sequential loop never
+  kills an already-launched (in-flight) job; an in-flight overshoot of the cap is allowed by design.
+- ✅ **Run-status dashboard** (`darwin/observability/`, §9.5): a pure reader over the persisted
+  `runs/gen_<n>/state.json` + cost ledger producing per-generation / whole-run summaries (fitness
+  table, spend by kind, phase, deferred/failed/flagged counts) with markdown renderers; works on a
+  completed *or* in-progress generation (doubles as a live monitor). CLI:
+  `python -m darwin.observability --runs runs [--cost cost.jsonl]`.
+- ✅ **Attribution-enforcement audit** (`observability/attribution.py`, §8.4): cross-checks a
+  finished iteration's recorded provenance against the genome source — arXiv ids in the genome
+  missing from `papers_cited` (`uncited_paper`, error), `papers_cited` entries with no inline note
+  in the genome (`missing_inline_paper`, error), and `datasets_used` not referenced in the genome
+  (`unrecorded_dataset`, warning). Pure text analysis + an `audit_iteration` convenience that reads
+  the memory file + genome dir.
+- ✅ **Crash/resume coverage** (§2.3): explicit tests crash mid-offspring (a finetune raises) and
+  during the global-memory pass, then resume with a fresh controller and assert completed offspring
+  are not recomputed and the generation finalizes — exercising the per-step `state.json`
+  persistence as the actual recovery guarantee.
+- ⏳ **Deferred (needs infra):** the *live* infra-failure **re-provision/retry** in the loop (an
+  `infra_failed` finetune is still treated as no-score, not yet re-provisioned on Lambda — the
+  retry policy exists in `run_finetune_job`, but actual re-provisioning is live GPU infra); and a
+  richer live dashboard surface (the markdown reader is the current "simple run dashboard" §9.5).
 
 **Invariants already enforced in code:** only the controller patches post-benchmark fields
 (§7.2); there is no agent-facing global-memory write path (§7.3); the global-memory pass is
@@ -999,20 +1025,26 @@ launches without killing in-flight jobs (§5.4); the GA keeps population size + 
 across generations (5 survivors carried with cached scores + 5 offspring filling culled slots,
 §3.2).
 
-**Resume point (next session) — Phase 7 (hardening & observability), plus landing Phase 6's
-deferred live producers.** Phase 6's anti-gaming + diversity *cores* are built and wired into
-fitness (above); what remains for Phase 6 is **infra/data-bound**, so it lands together with the
-rest of the deferred eval/GPU infra: the **live contamination scan + generalization-gap check**
-(both need the host-only held-out eval items and an OOD probe run in the zero-egress eval
-container — inject `eval_items_provider`/`ood_probe` into `LocalAntiGamingScanner` once that data
-plane exists), and the **32B scale-up** (`FinetuneConfig.base_model`/`sharding`/`num_gpus` knobs
-exist; the live Lambda backend consumes them). Phase 7 proper: crash/resume coverage, cost
-guardrails, the run dashboard reading `runs/gen_<n>/`, and an audit of attribution enforcement
-(§9.5/§10). Note: the §3.4 `diversity_pick` is built + wired but **off by default** — enable it
-in config once baseline GA behavior is understood, optionally swapping the default
-`genome_code_distance` for an embedding-based distance (Appendix A). Work continues on branch
-`v2-foundation`. Run tests with `.venv/Scripts/python.exe -m pytest -q` (or the `uv` command if
-the resolver is healthy).
+**Resume point (next session) — all phase *cores* (0–7) are built; what remains is the live
+infra/data plane.** The full loop, both mutation backends, the cost/finetune/bench cores, the
+§6.4 anti-gaming + §3.4 diversity producers, and the Phase 7 hardening/observability cores are in
+the repo and unit-tested without Docker/GPU/Claude. The remaining work is the deferred *live*
+substrate, which several phases share:
+- **Lambda GPU plane** — real provisioning + the `darwin-finetune` image; the live infra-failure
+  re-provision/retry in the loop (today `infra_failed` is no-score); the 32B scale-up consuming
+  `FinetuneConfig.base_model`/`sharding`/`num_gpus`.
+- **Zero-egress eval plane** — the `darwin-eval` container + real benchmark-harness adapters
+  (`darwin/bench/swe_bench/` feeds the coding slice); the host-only held-out eval items + the OOD
+  probe run, injected into `LocalAntiGamingScanner` (`eval_items_provider`/`ood_probe`) to turn on
+  the live contamination + generalization-gap checks (the genome-diff review already runs).
+- **Live agent plane** — the Docker `darwin-agent` container + `claude-agent-sdk` for a real
+  multi-hour Claude mutation window, and a live vLLM serve + OpenHands session for the `local`
+  backend (Appendix A multi-hour-stability question).
+- **Config to flip once baselines are understood:** enable `ga.diversity_pick` (optionally swap
+  `genome_code_distance` for an embedding distance, Appendix A); set `cost.gen_budget_usd` /
+  `per_job_*` caps; choose `antigaming.genome_reviewer` (`claude` default vs. `rule` for
+  strict-local). Work continues on branch `v2-foundation`. Run tests with
+  `.venv/Scripts/python.exe -m pytest -q` (or the `uv` command if the resolver is healthy).
 
 ---
 
