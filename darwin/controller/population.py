@@ -34,6 +34,7 @@ class Model:
     is_survivor: bool = False  # carried over with a cached score vs. freshly mutated
     mutation_failed: bool = False  # fell back to the unchanged clone of S (§4.3)
     finetune_failed: bool = False  # recipe couldn't train at scale (§5.3)
+    scored_slice: int | None = None  # the held-out slice `scores` were computed on (§6.2)
 
     def to_dict(self) -> dict:
         return {
@@ -49,6 +50,7 @@ class Model:
             "is_survivor": self.is_survivor,
             "mutation_failed": self.mutation_failed,
             "finetune_failed": self.finetune_failed,
+            "scored_slice": self.scored_slice,
         }
 
     @classmethod
@@ -67,6 +69,7 @@ class Model:
             is_survivor=d.get("is_survivor", False),
             mutation_failed=d.get("mutation_failed", False),
             finetune_failed=d.get("finetune_failed", False),
+            scored_slice=d.get("scored_slice"),
         )
 
 

@@ -2,7 +2,7 @@
 
 > Companion to `ARCHITECTURE.md` (the spec). This doc describes **what is actually built**, the
 > **steps to finish** the live system, and **how to run and test** it. Section refs (§x) point
-> into `ARCHITECTURE.md`. As of the current `v2-foundation` branch: **296 tests passing**,
+> into `ARCHITECTURE.md`. As of the current `v2-foundation` branch: **308 tests passing**,
 > all phase cores (0–7) + the live-infra cores + the run wiring implemented; only the genuinely-
 > live seams remain (real GPUs / Docker / live APIs + heavy ML deps).
 >
@@ -235,7 +235,7 @@ Key config switches (`DarwinConfig`, defaults from §10.1): `mutation.backend` (
 ## 7. How to test
 
 ```powershell
-uv run --python 3.14 --extra dev python -m pytest -q     # 296 passing
+uv run --python 3.14 --extra dev python -m pytest -q     # 308 passing
 ```
 
 > The heavy `local`-extra deps (`vllm`, `openhands-ai`) are environment-marked to

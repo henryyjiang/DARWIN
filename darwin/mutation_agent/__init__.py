@@ -27,6 +27,13 @@ from darwin.mutation_agent.backend import (
     MutationResult,
 )
 from darwin.mutation_agent.runner import run_mutation_window
+from darwin.mutation_agent.memory_synthesis import (
+    ClaudeMemorySynthesizer,
+    MemorySynthesizer,
+    SynthesisContext,
+    git_log,
+    read_transcript_excerpt,
+)
 from darwin.mutation_agent.vllm_serving import (
     VLLMServeConfig,
     VLLMServer,
@@ -50,6 +57,11 @@ __all__ = [
     "MutationContext",
     "MutationResult",
     "run_mutation_window",
+    "MemorySynthesizer",
+    "ClaudeMemorySynthesizer",
+    "SynthesisContext",
+    "git_log",
+    "read_transcript_excerpt",
     "VLLMServeConfig",
     "VLLMServer",
     "VLLMServerError",

@@ -810,7 +810,7 @@ Context a new session needs that isn't obvious from the repo alone:
 
 **Tooling.** The project standardizes on **`uv`** (the Windows host has no bare `python`; uv
 manages CPython 3.14.4). Layout/deps in `pyproject.toml`. Run the suite with:
-`uv run --python 3.14 --extra dev python -m pytest -q` — **296 tests passing**. (The heavy
+`uv run --python 3.14 --extra dev python -m pytest -q` — **308 tests passing**. (The heavy
 Linux/GPU-only `local`-extra deps — `vllm`, `openhands-ai` — are environment-marked to
 `sys_platform == 'linux'` + Python `>=3.12,<3.14` since `openhands-ai` doesn't support 3.14; this
 keeps uv's universal resolution satisfiable and the Windows/3.14 dev host installs + tests without
@@ -1070,6 +1070,13 @@ global pass).**
 - ✅ **Global-memory pass enriched (§7.4):** the Claude synthesizer now reasons about overarching
   guiding principles and over cited papers + what's-working to produce prioritized concrete
   concepts-to-test, upholding the scaling direction and weighing cost/train-time.
+- ✅ **§4.3 memory-synthesis fallback** (`mutation_agent/memory_synthesis.py`): if a mutator never
+  wrote its memory file, the controller synthesizes the agent-written fields from the genome's git
+  log + a transcript excerpt via an injectable `MemorySynthesizer` (`ClaudeMemorySynthesizer`
+  default; None keeps the skip behavior), so the global pass always has a notebook to read.
+- ✅ **§6.2 survivor re-benchmark on rotation**: `Model.scored_slice` tracks the slice a model's
+  cached scores were computed on; when the held-out slice rotates, survivors are cheaply re-scored
+  on the current slice (not re-finetuned) so all 10 share one slice. No-op when rotation is off.
 - ⏳ **Remaining glue:** a `ContainerGenerationOps` so the window/finetune/eval actually execute
   *inside* the `darwin-agent`/`darwin-finetune`/`darwin-eval` images (today the loop runs via
   `LocalGenerationOps` on the local FS; the sandbox specs/runner/Dockerfiles exist but aren't yet

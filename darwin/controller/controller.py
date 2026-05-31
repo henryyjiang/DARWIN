@@ -24,7 +24,10 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Protocol
+from typing import TYPE_CHECKING, Callable, Protocol
+
+if TYPE_CHECKING:
+    from darwin.mutation_agent.memory_synthesis import MemorySynthesizer
 
 from darwin.bench.fitness import reduce_fitness, survivor_baseline
 from darwin.bench.rotation import held_out_slice
@@ -121,6 +124,10 @@ class Controller:
     synthesizer: Synthesizer | None = None  # global-memory pass writer (§7.4); injected/fake
     antigaming: "AntiGamingScanner | None" = None  # §6.4 scan; None => disabled (flags stay 0)
     budget: BudgetGuard | None = None  # §5.4 hard cap; None => uncapped (launch every offspring)
+    # §4.3 fallback: synthesize a missing per-model memory file from the git log + transcript.
+    # None => keep the skip behavior (the agent is expected to have written it).
+    memory_synthesizer: "MemorySynthesizer | None" = None
+    transcript_dir: Path | None = None  # where claude_backend persisted transcripts (§4.5)
     enable_global_memory: bool = True
     # §3.4 diversity safeguard distance fn; used only when `ga.diversity_pick` is on. Defaults
     # to the code n-gram distance (`genome_code_distance`); inject an embedding-based one later.
@@ -151,6 +158,7 @@ class Controller:
 
         # ---- AGGREGATE_FITNESS
         if not state.at_least("aggregated"):
+            self._rebenchmark_survivors(survivors, self._eval_slice(generation), generation)
             self._aggregate_fitness(state, survivors)
             state.advance_to("aggregated")
             self.state_store.save(state)
@@ -308,10 +316,43 @@ class Controller:
                 off.antigaming_flags = report.count
             off.antigaming_done = True
 
+    # ------------------------------------------------------------------ survivor re-bench (§6.2)
+    def _rebenchmark_survivors(
+        self, survivors: list[Model], slice_id: int, generation: int
+    ) -> None:
+        """Re-score survivors on the current slice when the eval slice rotated (§6.2).
+
+        The held-out slice is fixed for a generation and all 10 models share it. Survivors are
+        NOT re-finetuned (their adapter is cached) but their *cheap* benchmark is re-run when the
+        slice differs from the one their cached scores were computed on. No-op when rotation is
+        off (or a single slice), so the default path reuses cached survivor scores.
+        """
+        cfg = self.config.benchmark
+        if not cfg.eval_rotation or cfg.num_eval_slices <= 1:
+            return
+        from darwin.controller.state import OffspringState
+
+        for s in survivors:
+            if s.scored_slice == slice_id:
+                continue
+            scores = self.ops.benchmark(
+                offspring=s,
+                state=OffspringState(
+                    name=s.name, parent_survivor=s.parent_survivor or "", mutator=s.mutator,
+                    backend=s.backend, iteration=0,
+                ),
+                slice_id=slice_id,
+                generation=generation,
+            )
+            s.scores = scores
+            s.scored_slice = slice_id
+
     # ------------------------------------------------------------------ AGGREGATE_FITNESS
     def _aggregate_fitness(self, state: GenerationState, survivors: list[Model]) -> None:
         baseline = survivor_baseline([s.scores for s in survivors if s.scores])
+        slot_models = Population.from_dict(state.population_in).by_name()
         for off in state.offspring:
+            self._ensure_memory(off, slot_models, state.generation)  # §4.3 fallback
             if off.finetune_status == "deferred":
                 # never launched (budget cap, §5.4): unscored, not a recipe failure -> no floor.
                 # Carried into the next population to be re-attempted if budget frees.
@@ -330,6 +371,41 @@ class Controller:
             )
             off.fitness = fitness
             self._patch_memory(off)
+
+    def _ensure_memory(
+        self, off: OffspringState, slot_models: dict[str, Model], generation: int
+    ) -> None:
+        """Synthesize a missing per-model memory file from git log + transcript (§4.3 fallback).
+
+        No-op when a synthesizer isn't injected (keep the skip behavior) or when the agent already
+        wrote its memory file. Otherwise reconstruct the agent-written fields so the global-memory
+        pass (§7.4) always has this lineage's notebook to read.
+        """
+        if self.memory_synthesizer is None:
+            return
+        if off.iteration in self.store.iteration_numbers(off.name):
+            return  # the agent wrote it
+        from darwin.mutation_agent.memory_synthesis import (
+            SynthesisContext,
+            git_log,
+            read_transcript_excerpt,
+        )
+
+        slot = slot_models.get(off.name)
+        parent = slot_models.get(off.parent_survivor)
+        transcript = (self.transcript_dir / f"{off.name}.jsonl") if self.transcript_dir else None
+        ctx = SynthesisContext(
+            model=off.name,
+            iteration=off.iteration,
+            generation=generation,
+            parent_survivor=off.parent_survivor,
+            mutator=off.mutator or "claude",
+            backend=off.backend,
+            base_fitness=parent.fitness if parent and parent.fitness is not None else 0.0,
+            git_log=git_log(slot.genome_dir) if slot is not None else "",
+            transcript_excerpt=read_transcript_excerpt(transcript),
+        )
+        self.store.write_iteration(self.memory_synthesizer.synthesize(ctx))
 
     def _patch_memory(self, off: OffspringState) -> None:
         """Patch the controller-owned post-benchmark fields into the memory file (§7.2)."""
@@ -350,6 +426,7 @@ class Controller:
     def _form_next_population(
         self, state: GenerationState, survivors: list[Model], generation: int
     ) -> Population:
+        slice_id = self._eval_slice(generation)  # the slice this generation scored on (§6.2)
         models: list[Model] = []
         for s in survivors:
             s.is_survivor = True
@@ -358,6 +435,8 @@ class Controller:
         slot_models = Population.from_dict(state.population_in).by_name()
         for off in state.offspring:
             base = slot_models[off.name]
+            # an offspring that was actually benchmarked was scored on this gen's slice
+            scored_slice = slice_id if off.finetune_status == "ok" else None
             models.append(
                 Model(
                     name=off.name,
@@ -372,6 +451,7 @@ class Controller:
                     is_survivor=False,
                     mutation_failed=off.mutation_failed,
                     finetune_failed=off.finetune_failed,
+                    scored_slice=scored_slice,
                 )
             )
         return Population(models=models)
