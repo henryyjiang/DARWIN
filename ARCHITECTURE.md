@@ -806,18 +806,18 @@ Context a new session needs that isn't obvious from the repo alone:
 ### 10.3 Implementation status (living section)
 
 > Updated as phases land. Records what *exists in the repo* vs. what the spec above describes.
-> **As of 2026-05-30.**
+> **As of 2026-05-31.**
 
 **Tooling.** The project standardizes on **`uv`** (the Windows host has no bare `python`; uv
 manages CPython 3.14.4). Layout/deps in `pyproject.toml`. Run the suite with:
-`uv run --python 3.14 --extra dev python -m pytest -q` — **47 tests passing**.
+`uv run --python 3.14 --extra dev python -m pytest -q` — **112 tests passing**.
 
 **Code layout (actual).** All Python lives under a single importable `darwin/` package
 (`darwin.config`, `darwin.controller`, `darwin.mutation_agent`, `darwin.finetune`,
-`darwin.bench`, `darwin.memory`, `darwin.mcp`, `darwin.global_memory`); non-code dirs are at
-the repo root (`memory/global/`, `models/`, `runs/`, `containers/`). This maps the spec's flat
-dir names onto `darwin.*` submodules + top-level data/asset dirs to keep everything importable
-and cross-platform.
+`darwin.bench`, `darwin.memory`, `darwin.cost`, `darwin.mcp`, `darwin.global_memory`); non-code
+dirs are at the repo root (`memory/global/`, `models/`, `runs/`, `containers/`). This maps the
+spec's flat dir names onto `darwin.*` submodules + top-level data/asset dirs to keep everything
+importable and cross-platform.
 
 **Phase 0 — complete.**
 - ✅ Config schema with all §10.1 defaults as dataclasses (`darwin/config.py`).
@@ -849,9 +849,10 @@ and cross-platform.
   structured outputs for the four sections, prompt caching on the system prompt, streaming),
   plus `run_global_memory_pass` (gather → synthesize → write) as the sole sanctioned global
   writer.
-- ⏳ **Not yet built:** the MCP `paper.*`, `data.*`, and `cost.*` tools (each waits on its
-  backing subsystem — HF/arXiv whitelists and the cost ledger). (`smoke.run` + `finalize`
-  landed with Phase 2.)
+- ✅ **MCP `cost.*` tools** (`cost_report` / `cost_get_budget`) landed with Phase 3, bound to
+  an offspring's generation/model when a mutation context + cost ledger are attached.
+- ⏳ **Not yet built:** the MCP `paper.*` and `data.*` tools (each waits on its backing
+  subsystem — the HF/arXiv whitelists). (`smoke.run` + `finalize` landed with Phase 2.)
 
 **Phase 2 — backend-agnostic core complete; live containerized run deferred.**
 - ✅ The §4.2 lifecycle as a backend-agnostic core in `darwin/mutation_agent/`:
@@ -872,18 +873,46 @@ and cross-platform.
   `claude-agent-sdk` (optional `agent` extra) + the API. The §4.4.1 finetune-specific smoke
   harness (real train step) lands with Phase 3; today's runner is the generic command-based one.
 
-**Phases 3–7 — not started.**
+**Phase 3 — backend-agnostic cores complete; live GPU/eval-container infra deferred.**
+- ✅ **Cost ledger** (`darwin/cost/`): append-only JSONL `CostLedger` (record finetune
+  GPU-hours×rate, API/agent/benchmark spend; per-generation + per-kind totals; markdown render
+  for `cost_ledger.md`, §7.4) + `BudgetGuard` for the hard per-generation `gen_budget_usd` cap
+  (§5.4: refuse to launch new jobs when exhausted; never kill in-flight). `gpu_rate_usd_per_h`
+  added to `CostConfig`.
+- ✅ **MCP `cost.*` tools** (above) — `cost_report` / `cost_get_budget` wired into the server.
+- ✅ **Finetune pipeline core** (`darwin/finetune/`): the `FinetuneJob`/`FinetuneOutcome`/
+  `FinetuneResult` contract, a CPU-runnable `SubprocessFinetuneBackend` (runs the green
+  genome's finetune entrypoint, classifies OOM/NaN/non-zero/no-adapter from exit+log), a
+  scaffolded `LambdaFinetuneBackend`, and `run_finetune_job` applying the §5.3 policy (one OOM
+  safe-mode retry; infra-vs-recipe split; per-job cost-cap kill) and the §5.4 cost contract
+  (each attempt's GPU-hours×rate recorded to the ledger).
+- ✅ **Benchmark runner + fitness + rotation** (`darwin/bench/`): `BenchmarkJob`/
+  `BenchmarkResult`/`BenchmarkBackend` + a `SubprocessBenchmarkBackend` (reads back a JSON
+  score vector) and a scaffolded `EvalContainerBenchmarkBackend`; the seeded held-out-slice
+  rotation keyed by generation (`rotation.py`, §6.2/§6.4); the §6.3 fitness reduction
+  (`fitness.py`: normalize vs. survivor baseline, floor on `finetune_failed`, cost/anti-gaming/
+  mutation-failed penalties).
+- ⏳ **Deferred (needs infra):** the *live* Lambda GPU provisioning + `darwin-finetune` image;
+  the *live* zero-egress `darwin-eval` container + real benchmark harness adapters (the
+  salvaged `darwin/bench/swe_bench/` feeds the coding slice); the §4.4.1 finetune-specific
+  smoke test's *real* train step (the generic command runner + the genome's own entrypoint
+  cover the contract today). Anti-gaming heuristics (§6.4) are Phase 6.
+
+**Phases 4–7 — not started.**
 
 **Invariants already enforced in code:** only the controller patches post-benchmark fields
 (§7.2); there is no agent-facing global-memory write path (§7.3); the global-memory pass is
 the only sanctioned writer of global memory; finetuning runs only on a green commit (the
-mutation window always finalizes to one, §4.4).
+mutation window always finalizes to one, §4.4); a `finetune_failed` recipe gets floor fitness
+and infra failure is never charged to the recipe (§5.3/§6.3); the budget cap stops *new*
+launches without killing in-flight jobs (§5.4).
 
-**Resume point (next session) — Phase 3.** LoRA/QLoRA finetune on Lambda (start QLoRA
-single-GPU, §5.3) → benchmark runner in the zero-egress `darwin-eval` container producing a
-fitness vector (§6) → cost ledger populated from GPU-hours + API usage, which unblocks the MCP
-`cost.*` tools (§9.3) and the §4.4.1 finetune-specific smoke test (real train step). Work
-continues on branch `v2-foundation`. Run tests with
+**Resume point (next session) — Phase 4.** Wire the full GA loop / controller state machine
+(§2.3): SPAWN/clone/mutator pairing (§3.2), the generation state machine with resumable
+`runs/gen_<n>/state.json`, GA cull, and the global-memory pass invoked after benchmarking
+(§7.4) — composing the now-built mutation (Phase 2), finetune + benchmark + cost (Phase 3),
+and memory (Phase 1) cores end-to-end on a small/cheap base model to validate the loop
+produces fitness gains. Work continues on branch `v2-foundation`. Run tests with
 `uv run --python 3.14 --extra dev python -m pytest -q`.
 
 ---

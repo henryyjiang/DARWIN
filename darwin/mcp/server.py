@@ -19,20 +19,25 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from darwin.cost import BudgetGuard, CostLedger
 from darwin.memory import MemoryStore
-from darwin.mcp.tools import MemoryToolset, AgentToolset
+from darwin.mcp.tools import MemoryToolset, AgentToolset, CostToolset
 
 
 def create_server(
     store: MemoryStore,
     agent_context: Any | None = None,
     name: str = "darwin-mcp",
+    ledger: CostLedger | None = None,
+    budget_guard: BudgetGuard | None = None,
 ) -> FastMCP:
     """Build a FastMCP server exposing the memory tool group over `store`.
 
     When `agent_context` (a `MutationContext`) is supplied — i.e. the server is attached to a
     live mutation window — the agent's `smoke.run` and `finalize` tools (§9.3) are also
-    registered, bound to that offspring's checkpointer.
+    registered, bound to that offspring's checkpointer. When a `ledger` is also supplied, the
+    `cost.report` / `cost.get_budget` tools are registered, bound to that offspring's
+    generation/model (and the optional `budget_guard` for cap status).
     """
     server = FastMCP(name)
     tools = MemoryToolset(store)
@@ -94,6 +99,22 @@ def create_server(
         @server.tool(name="finalize", description="Declare convergence to end your mutation window early once your code is green and your memory file is written.")
         def finalize() -> dict[str, Any]:
             return agent_tools.finalize()
+
+        if ledger is not None:
+            cost_tools = CostToolset(
+                ledger,
+                generation=agent_context.generation,
+                model=agent_context.model,
+                budget_guard=budget_guard,
+            )
+
+            @server.tool(name="cost_report", description="Log spend (USD) you incurred this window (e.g. API calls). Attributed to your generation and model. Provide amount_usd and a short reason.")
+            def cost_report(amount_usd: float, reason: str, kind: str = "api") -> dict[str, Any]:
+                return cost_tools.report(amount_usd, reason, kind)
+
+            @server.tool(name="cost_get_budget", description="Read this generation's budget status: cap, spend so far, remaining, and whether the budget is exhausted. Cost is a first-class constraint — keep your strategy affordable.")
+            def cost_get_budget() -> dict[str, Any]:
+                return cost_tools.get_budget()
 
     return server
 

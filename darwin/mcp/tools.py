@@ -22,6 +22,7 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import TYPE_CHECKING, Any
 
+from darwin.cost import BudgetGuard, CostLedger
 from darwin.memory import IterationMemory, MemoryStore, MemoryValidationError
 
 if TYPE_CHECKING:
@@ -136,3 +137,59 @@ class AgentToolset:
     @property
     def finalized(self) -> bool:
         return self._finalized
+
+
+class CostToolset:
+    """Cost-ledger tools bound to one offspring's generation/model (ARCHITECTURE.md §9.3).
+
+    - `cost.report(amount, reason)` — the agent logs API/compute spend it incurred this
+      window; entries are attributed to the bound generation + model.
+    - `cost.get_budget()` — the agent reads the generation's budget status so it can self-
+      regulate (cost is a first-class constraint surfaced in memory, §1.3 / §5.4).
+
+    Bound context (generation/model) is fixed by the controller, not chosen by the agent, so
+    an agent cannot mis-attribute spend to another generation/model. The optional
+    `BudgetGuard` answers `get_budget`; without it, budget is reported as uncapped.
+    """
+
+    def __init__(
+        self,
+        ledger: CostLedger,
+        *,
+        generation: int,
+        model: str | None = None,
+        budget_guard: BudgetGuard | None = None,
+    ):
+        self.ledger = ledger
+        self.generation = generation
+        self.model = model
+        self.budget_guard = budget_guard
+
+    def report(self, amount_usd: float, reason: str, kind: str = "api") -> dict[str, Any]:
+        try:
+            entry = self.ledger.record(
+                generation=self.generation,
+                kind=kind,  # type: ignore[arg-type]  (validated in record)
+                amount_usd=amount_usd,
+                reason=reason,
+                model=self.model,
+            )
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        return {
+            "ok": True,
+            "amount_usd": entry.amount_usd,
+            "generation_total": self.ledger.total(self.generation),
+        }
+
+    def get_budget(self) -> dict[str, Any]:
+        if self.budget_guard is None:
+            return {
+                "generation": self.generation,
+                "gen_budget_usd": None,
+                "generation_spend": self.ledger.total(self.generation),
+                "total_spend": self.ledger.total(),
+                "remaining": None,
+                "exhausted": False,
+            }
+        return asdict(self.budget_guard.status(self.generation))

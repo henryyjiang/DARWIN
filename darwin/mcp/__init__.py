@@ -2,16 +2,17 @@
 
 The single structured tool surface exposed to *both* agent backends (Claude Agent SDK and
 the local/OpenHands harness) so the mutation directive and tool semantics are identical
-regardless of who's driving (§9.4). This package currently implements the **memory** tool
-group; `paper.*`, `data.*`, `smoke.run`, `cost.*`, and `finalize` are added in later
-increments as their backing subsystems land.
+regardless of who's driving (§9.4). This package implements the **memory** group, the
+agent-window tools (`smoke.run`, `finalize`), and the **cost** group (`cost.report`,
+`cost.get_budget`); `paper.*` and `data.*` are added in later increments as their backing
+subsystems land.
 
 Layering:
-- `tools.py` — backend-agnostic tool *logic* over a `MemoryStore`, returning JSON-friendly
-  values. Pure and directly unit-testable (no MCP transport needed).
+- `tools.py` — backend-agnostic tool *logic* over a `MemoryStore` / `CostLedger`, returning
+  JSON-friendly values. Pure and directly unit-testable (no MCP transport needed).
 - `server.py` — thin FastMCP wiring that registers the logic as MCP tools.
 """
 
-from darwin.mcp.tools import MemoryToolset, AgentToolset
+from darwin.mcp.tools import MemoryToolset, AgentToolset, CostToolset
 
-__all__ = ["MemoryToolset", "AgentToolset"]
+__all__ = ["MemoryToolset", "AgentToolset", "CostToolset"]

@@ -60,6 +60,9 @@ class CostConfig:
     gen_budget_usd: float | None = None  # hard cap/generation
     per_job_cap_usd: float | None = None  # runaway finetune kill -> finetune_failed
     per_job_max_h: float | None = None
+    # GPU $/hr used to convert finetune GPU-hours -> dollars in the cost ledger (§5.3).
+    # Default ~ a Lambda single-GPU rate; override per run / per instance type.
+    gpu_rate_usd_per_h: float = 1.10
 
 
 @dataclass
