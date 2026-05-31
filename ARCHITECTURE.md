@@ -876,7 +876,15 @@ and cross-platform.
 
 **Invariants already enforced in code:** only the controller patches post-benchmark fields
 (§7.2); there is no agent-facing global-memory write path (§7.3); the global-memory pass is
-the only sanctioned writer of global memory.
+the only sanctioned writer of global memory; finetuning runs only on a green commit (the
+mutation window always finalizes to one, §4.4).
+
+**Resume point (next session) — Phase 3.** LoRA/QLoRA finetune on Lambda (start QLoRA
+single-GPU, §5.3) → benchmark runner in the zero-egress `darwin-eval` container producing a
+fitness vector (§6) → cost ledger populated from GPU-hours + API usage, which unblocks the MCP
+`cost.*` tools (§9.3) and the §4.4.1 finetune-specific smoke test (real train step). Work
+continues on branch `v2-foundation`. Run tests with
+`uv run --python 3.14 --extra dev python -m pytest -q`.
 
 ---
 
