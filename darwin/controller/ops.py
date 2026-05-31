@@ -66,6 +66,18 @@ class LocalGenerationOps:
     def _adapter_path(self, name: str) -> Path:
         return self.workspace / name / "adapter.bin"
 
+    # ------------------------------------------------------------------ slot reset (drop step)
+    def reset_offspring_slot(self, name: str) -> None:
+        """Wipe a recycled offspring slot so SPAWN re-clones fresh (the GA drop step, §3.2).
+
+        Called once per generation by the controller for each offspring slot (never on resume),
+        so a slot vacated by a culled model is cleared before the new offspring is cloned in.
+        Survivor slots are never passed here, so survivors persist on disk.
+        """
+        from darwin.controller.workspace import reset_slot
+
+        reset_slot(self.workspace, name)
+
     # ------------------------------------------------------------------ SPAWN (§3.2)
     def spawn(self, *, offspring: OffspringState, parent: Model, generation: int) -> Model:
         genome = self._genome_dir(offspring.name)

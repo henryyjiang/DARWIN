@@ -39,6 +39,11 @@ from darwin.controller.antigaming_ops import (
     LocalAntiGamingScanner,
     genome_mutation_diff,
 )
+from darwin.controller.workspace import (
+    bootstrap_population,
+    materialize_model,
+    reset_slot,
+)
 from darwin.controller.diversity import (
     genome_code_distance,
     jaccard_distance,
@@ -67,4 +72,7 @@ __all__ = [
     "LocalGenerationOps",
     "LocalAntiGamingScanner",
     "genome_mutation_diff",
+    "bootstrap_population",
+    "materialize_model",
+    "reset_slot",
 ]

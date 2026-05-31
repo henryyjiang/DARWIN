@@ -194,7 +194,13 @@ class Controller:
         plans = pair_offspring(survivors, len(offspring_slots), self.rng)
 
         offspring_states = []
+        reset_slot = getattr(self.ops, "reset_offspring_slot", None)
         for slot_name, plan in zip(offspring_slots, plans):
+            # Drop step (§3.2): clear the slot vacated by a culled model before re-cloning, so the
+            # resting set on disk is the survivors. Runs once here (fresh state only) — a resume
+            # loads existing state and never re-enters this branch, so in-progress work is safe.
+            if reset_slot is not None:
+                reset_slot(slot_name)
             offspring_states.append(
                 OffspringState(
                     name=slot_name,

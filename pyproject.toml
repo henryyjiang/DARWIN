@@ -10,6 +10,9 @@ dependencies = [
     "anthropic>=0.69",
 ]
 
+[project.scripts]
+darwin = "darwin.run:main"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
