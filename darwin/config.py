@@ -80,6 +80,8 @@ class BenchmarkConfig:
 
     suite: list[str] = field(default_factory=list)  # e.g. ["humaneval+", "gsm8k", ...]
     eval_rotation: bool = True  # held-out slice rotates per generation
+    num_eval_slices: int = 1  # how many private held-out slices exist to rotate over (§6.4)
+    eval_seed: int = 0  # seeds the reproducible rotation permutation (§6.4)
 
 
 @dataclass

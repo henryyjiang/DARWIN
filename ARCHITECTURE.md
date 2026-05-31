@@ -810,7 +810,7 @@ Context a new session needs that isn't obvious from the repo alone:
 
 **Tooling.** The project standardizes on **`uv`** (the Windows host has no bare `python`; uv
 manages CPython 3.14.4). Layout/deps in `pyproject.toml`. Run the suite with:
-`uv run --python 3.14 --extra dev python -m pytest -q` — **112 tests passing**.
+`uv run --python 3.14 --extra dev python -m pytest -q` — **138 tests passing**.
 
 **Code layout (actual).** All Python lives under a single importable `darwin/` package
 (`darwin.config`, `darwin.controller`, `darwin.mutation_agent`, `darwin.finetune`,
@@ -898,21 +898,50 @@ importable and cross-platform.
   smoke test's *real* train step (the generic command runner + the genome's own entrypoint
   cover the contract today). Anti-gaming heuristics (§6.4) are Phase 6.
 
-**Phases 4–7 — not started.**
+**Phase 4 — full GA loop / controller composition complete; live base-model run deferred.**
+- ✅ **Population & GA** (`darwin/controller/population.py`, `ga.py`): `Model`/`Population`
+  (§3.1, JSON-round-tripping for state); `rank_models`/`select_survivors` (GA cull — floor/None
+  fitness sorts last) and `pair_offspring` (§3.2: S with replacement, M≠S with replacement,
+  <2-survivor → claude fallback `mutator=None`). Optional §3.4 diversity pick behind a flag +
+  distance callable (off by default). Seeded RNG, pure.
+- ✅ **Resumable generation state** (`state.py`): `GenerationState`/`OffspringState` with
+  per-offspring phase flags + `PHASE_ORDER`, `GenerationStateStore` reading/writing
+  `runs/gen_<n>/state.json`; `latest_generation` for run resume (§2.3).
+- ✅ **Controller state machine** (`controller.py`): `Controller.run_generation` walks
+  SELECT→SPAWN→[per offspring MUTATE→FINETUNE→BENCHMARK]→AGGREGATE_FITNESS→form-next-population
+  →GLOBAL_MEMORY_PASS→CHECKPOINT (§2.3), persisting after every step and **resuming at the
+  first incomplete offspring stage**. Fitness is reduced vs. the survivor baseline (§6.3); the
+  controller patches the §7.2 post-benchmark memory fields and triggers the §7.4 pass. The
+  per-offspring execution is an injectable `GenerationOps` seam.
+- ✅ **`LocalGenerationOps`** (`ops.py`): the concrete seam wiring the real cores — clones S's
+  genome into the offspring slot, runs the §4.2 mutation window (backend chosen per offspring
+  via an injected factory), runs the §5 finetune job + §6 eval, on the local filesystem with
+  subprocess/injected backends. Verified end-to-end (clone → green mutation window → subprocess
+  finetune → subprocess benchmark → fitness → memory patch → global-memory pass) without
+  Docker/GPU/Claude.
+- ⏳ **Deferred (needs infra):** the *live* multi-generation run on a small/cheap base model to
+  validate the loop produces real fitness gains (needs the Phase 3 live finetune/eval infra);
+  full infra-failure re-provision/retry in the loop is treated as no-score for now (Phase 7
+  hardening).
+
+**Phases 5–7 — not started.**
 
 **Invariants already enforced in code:** only the controller patches post-benchmark fields
 (§7.2); there is no agent-facing global-memory write path (§7.3); the global-memory pass is
 the only sanctioned writer of global memory; finetuning runs only on a green commit (the
 mutation window always finalizes to one, §4.4); a `finetune_failed` recipe gets floor fitness
 and infra failure is never charged to the recipe (§5.3/§6.3); the budget cap stops *new*
-launches without killing in-flight jobs (§5.4).
+launches without killing in-flight jobs (§5.4); the GA keeps population size + names stable
+across generations (5 survivors carried with cached scores + 5 offspring filling culled slots,
+§3.2).
 
-**Resume point (next session) — Phase 4.** Wire the full GA loop / controller state machine
-(§2.3): SPAWN/clone/mutator pairing (§3.2), the generation state machine with resumable
-`runs/gen_<n>/state.json`, GA cull, and the global-memory pass invoked after benchmarking
-(§7.4) — composing the now-built mutation (Phase 2), finetune + benchmark + cost (Phase 3),
-and memory (Phase 1) cores end-to-end on a small/cheap base model to validate the loop
-produces fitness gains. Work continues on branch `v2-foundation`. Run tests with
+**Resume point (next session) — Phase 5 (local-model backend).** Add the §4.6 local backend:
+vLLM serving of a LoRA-merged population model behind an OpenAI-compatible endpoint, an
+OpenHands (or shim) harness exposing the same `darwin-mcp` tools + directive, and a
+`LocalMutationBackend` implementing the §4.2 contract so it plugs into the existing
+`mutation_backend_factory` seam (the controller already routes `backend="local"` to it). The
+backend-selection policy (`claude`/`local`/`mixed`) is already wired in the controller. Work
+continues on branch `v2-foundation`. Run tests with
 `uv run --python 3.14 --extra dev python -m pytest -q`.
 
 ---
