@@ -7,35 +7,39 @@ For demonstration purposes and due to budget and time constraints, OpenAI API is
 ### Paper
 [Link](http://arxiv.org/abs/2602.05848)
 
+> The abstract above describes the published **v1** system (nanoGPT trained from scratch,
+> OpenAI API for code mutation). The repository is being rewritten to **v2** — LoRA-finetuning
+> a capable coding model in an evolutionary loop, with **OpenAI dropped in favor of Anthropic
+> (Claude) + a local model**. The ground-truth design is in
+> [`ARCHITECTURE.md`](ARCHITECTURE.md); implementation status is tracked in its §10.3.
+
 ## Setup
-```
-# API keys, add to ~/.bashrc
-export OPENAI_API_KEY='...
-```
+
+The v2 controller is cross-platform Python managed with [`uv`](https://docs.astral.sh/uv/).
+Training/agent/eval work runs in Linux Docker containers (see [`containers/`](containers/)).
 
 ```
-# Verify that Docker is properly configured in your environment.
-docker build -t my-app -f DOCKERFILE .
+# Run the test suite
+uv run --python 3.14 --extra dev python -m pytest -q
 ```
 
-```
-# Install dependencies
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-```
+The Claude-backed components (the global-memory pass, §7.4; the Claude mutation backend, §4.5)
+read the Anthropic API key from the environment:
 
 ```
-# Clone SWE-bench
-cd swe_bench
-git clone https://github.com/princeton-nlp/SWE-bench.git
-cd SWE-bench
-git checkout dc4c087c2b9e4cefebf2e3d201d27e36
-pip install -e .
-cd ../../
+# add to your shell profile
+export ANTHROPIC_API_KEY='...'
 ```
 
-## Running Main Controller:
+The salvaged SWE-bench harness lives under [`darwin/bench/swe_bench/`](darwin/bench/swe_bench);
+when the benchmark runner is wired up (Phase 3, §6), clone the upstream eval repo into it:
+
 ```
-python main/main_controller.py
+git clone https://github.com/princeton-nlp/SWE-bench.git darwin/bench/swe_bench/SWE-bench
+cd darwin/bench/swe_bench/SWE-bench && git checkout dc4c087c2b9e4cefebf2e3d201d27e36 && pip install -e .
 ```
+
+## Running
+
+The v2 evolutionary loop is under construction — see [`ARCHITECTURE.md`](ARCHITECTURE.md) §10
+for the phased build plan and §10.3 for what currently exists.

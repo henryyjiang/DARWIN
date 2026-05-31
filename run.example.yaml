@@ -1,0 +1,60 @@
+# Example DARWIN run config (consumed by `python -m darwin --config run.example.yaml`).
+# Paths default under this file's directory when omitted.
+
+generations: 5
+
+# Execution path: "local" runs every stage in-process on the host (no Docker needed; the default,
+# good for dev + the test suite); "container" runs the window/finetune/eval inside the §8.5 images
+# (darwin-agent / darwin-finetune / darwin-eval) via ContainerGenerationOps — needs a Docker host,
+# the built images, the darwin-egress network, and the held-out eval slices under paths.eval_slices.
+mode: local
+
+paths:
+  workspace: models          # population dirs: models/<name>/{genome,adapter.bin,memory}
+  runs: runs                 # resumable state: runs/gen_<n>/state.json
+  memory: memory             # global + per-model memory store root
+  base_genome: base_genome   # the shared starting recipe cloned into the 5 seeds
+  cost_ledger: runs/cost.jsonl
+  eval_slices: eval_slices   # container mode: host-only held-out slices, eval_slices/<slice_id>/ (§6.2)
+
+# Commands the LocalGenerationOps backends invoke (run inside the genome dir / eval dir).
+# In a live containerized run these are replaced by ContainerGenerationOps; here they are the
+# genome's declared entrypoints (the reference recipes ship as darwin.finetune/bench.entrypoint).
+smoke_command: ["python", "smoke_test.py"]
+finetune_command: ["python", "-m", "darwin.finetune.entrypoint"]
+benchmark_command: ["python", "-m", "darwin.bench.entrypoint"]
+
+# Cached benchmark scores for the seed survivors (their pre-run benchmark logs, §6.2), so the
+# gen-0 fitness baseline exists. Keys are survivor names (s0..s4 by default).
+seed_scores:
+  s0: {humaneval+: 0.50, gsm8k: 0.42}
+  s1: {humaneval+: 0.51, gsm8k: 0.40}
+  s2: {humaneval+: 0.49, gsm8k: 0.43}
+  s3: {humaneval+: 0.52, gsm8k: 0.41}
+  s4: {humaneval+: 0.48, gsm8k: 0.44}
+
+config:
+  run_name: darwin-32b-scaleup
+  ga:
+    population_size: 10
+    num_survivors: 5
+    diversity_pick: false
+  mutation:
+    backend: claude          # bootstrap with claude; switch to local once gains are proven
+    mutation_window_h: 2.0   # the 2-hour window
+  cost:
+    gen_budget_usd: 500.0    # hard per-generation cap (§5.4)
+    per_job_cap_usd: 150.0
+    gpu_rate_usd_per_h: 1.79
+  finetune:
+    method: qlora_4bit
+    base_model: Qwen/Qwen2.5-Coder-32B
+    target_params_b: 32.0
+    max_train_tokens: 250000000000   # 250B
+    dynamic_gpu_allocation: true
+  benchmark:
+    suite: ["humaneval+", "gsm8k"]
+    eval_rotation: true
+  antigaming:
+    enabled: true
+    genome_reviewer: claude
