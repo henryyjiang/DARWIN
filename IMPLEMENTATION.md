@@ -2,9 +2,13 @@
 
 > Companion to `ARCHITECTURE.md` (the spec). This doc describes **what is actually built**, the
 > **steps to finish** the live system, and **how to run and test** it. Section refs (§x) point
-> into `ARCHITECTURE.md`. As of the current `v2-foundation` branch: **284 tests passing**,
-> all phase cores (0–7) + the live-infra cores implemented; only the genuinely-live seams remain
-> (real GPUs / Docker / live APIs + heavy ML deps).
+> into `ARCHITECTURE.md`. As of the current `v2-foundation` branch: **296 tests passing**,
+> all phase cores (0–7) + the live-infra cores + the run wiring implemented; only the genuinely-
+> live seams remain (real GPUs / Docker / live APIs + heavy ML deps).
+>
+> **Run it:** `python -m darwin --config run.example.yaml --generations 5` — bootstraps the
+> population on disk, assembles the controller, and drives the loop (uses the Claude mutation
+> backend + Claude global-memory pass by default, so it needs an API key for a real run).
 
 ---
 
@@ -57,6 +61,15 @@ IMPLEMENTATION.md            # this file
 
 Legend: ✅ built + unit-tested · 🔌 injected **live seam** (interface + orchestration tested, the
 live driver needs infra) · 📦 reference artifact (real, not yet built/run).
+
+### Run entrypoint & workspace — ✅ (the "run `main`" path)
+- `run.py` + `__main__.py` + `[project.scripts] darwin` — load a YAML run config
+  (`run.example.yaml`), **bootstrap** the gen-0 population on disk or **resume** the latest
+  generation, assemble the controller (`build_controller` seam), run `Controller.run(generations)`.
+- `controller/workspace.py` — `bootstrap_population` (5 survivor seeds with cached scores + 5
+  offspring slots), `reset_slot` (the GA **drop** step — wipe a recycled slot; survivors persist),
+  `materialize_model` (**move offspring results back** into `models/` from a container workdir).
+  The controller resets offspring slots once per generation at SPAWN (resume-safe).
 
 ### Orchestration & GA — ✅
 - `controller/controller.py` — the §2.3 state machine (SELECT→SPAWN→[MUTATE→FINETUNE→BENCHMARK]→
@@ -138,6 +151,7 @@ Each is a single injected interface; everything around it is already tested.
 | vLLM live serve | `VLLMServer` defaults | Real `vllm serve` of a LoRA-merged (and/or expanded) model on a GPU. |
 | Eval data providers | `LocalAntiGamingScanner` `eval_items_provider`/`ood_probe` | Supply host-only held-out items + an OOD probe run to turn on the live contamination + generalization-gap checks (genome-diff review already runs). |
 | Real training/eval | `finetune/entrypoint.py`, `bench/entrypoint.py` | The bodies are written; they run only inside the CUDA images with torch/peft/trl + real datasets/harnesses. |
+| **Container generation ops** | (new `ContainerGenerationOps` / container finetune+eval backends) | Run the window in `darwin-agent`, finetune in `darwin-finetune`, eval in `darwin-eval` via `darwin/sandbox/` + `materialize_model`. Open design points before building: an **in-container mutation entrypoint** (the agent window currently runs in-process via `LocalGenerationOps`), a **writable scores mount** on the eval container, and host↔container path mapping. Today the loop runs via `LocalGenerationOps` (local FS); the sandbox specs/runner/Dockerfiles exist but aren't yet the execution path. |
 
 ---
 

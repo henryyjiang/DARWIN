@@ -806,11 +806,11 @@ Context a new session needs that isn't obvious from the repo alone:
 ### 10.3 Implementation status (living section)
 
 > Updated as phases land. Records what *exists in the repo* vs. what the spec above describes.
-> **As of 2026-05-31 (Phases 0–7 cores + live-infra cores landed; only live seams remain).**
+> **As of 2026-05-31 (Phases 0–7 + live-infra cores + runnable `main` wired; only live seams remain).**
 
 **Tooling.** The project standardizes on **`uv`** (the Windows host has no bare `python`; uv
 manages CPython 3.14.4). Layout/deps in `pyproject.toml`. Run the suite with:
-`uv run --python 3.14 --extra dev python -m pytest -q` — **275 tests passing**. (If `uv`'s
+`uv run --python 3.14 --extra dev python -m pytest -q` — **296 tests passing**. (If `uv`'s
 resolver chokes on the `local` extra — an upstream `openhands-ai`/Python-version drift unrelated
 to DARWIN — run the existing venv directly: `.venv/Scripts/python.exe -m pytest -q`.)
 
@@ -1049,6 +1049,30 @@ irreducibly-live seam (each behind an injected interface, so the orchestration a
   `harness_runner` session for `local` mutation; the `claude-agent-sdk` session for `claude`
   mutation; the Lambda SSH `job_runner` (sync genome → run image → fetch adapter); the actual GPU
   training / benchmark-harness execution inside the images; and the in-loop infra re-provision retry.
+
+**Runnable loop wired (`main` + bootstrap + GA disk reconcile + dynamic GPU sizing + richer
+global pass).**
+- ✅ **Run entrypoint** `python -m darwin --config run.yaml` (`darwin/run.py`, `[project.scripts]`):
+  loads a YAML run config, **bootstraps** the gen-0 population on disk (5 survivor seeds with cached
+  benchmark scores + 5 offspring slots, `controller/workspace.py`) or **resumes** the latest
+  generation, assembles the controller via the `build_controller` seam, and runs the loop.
+- ✅ **GA disk reconcile (§3.2):** offspring slots are reset once per generation at SPAWN
+  (`workspace.reset_slot`, resume-safe) so a culled model's slot is wiped before the next clone —
+  the 5 survivors persist on disk, the dropped 5 are cleared (the cull lands at the next gen's
+  SELECT). `workspace.materialize_model` copies offspring results back into `models/` (for the
+  container path). Fixes the cross-generation stale-slot reuse.
+- ✅ **Runtime GPU allocation** for parameter scaling (`finetune/sizing.py`): instance + GPU count
+  sized from the run's (post-expansion) params + token budget (≤250B); `LambdaFinetuneBackend`
+  uses it when a job carries a `RunSize`. Global memory seeded with the depth-expansion / MoE-
+  upcycling / invent-better priorities + cost/train-time framing.
+- ✅ **Global-memory pass enriched (§7.4):** the Claude synthesizer now reasons about overarching
+  guiding principles and over cited papers + what's-working to produce prioritized concrete
+  concepts-to-test, upholding the scaling direction and weighing cost/train-time.
+- ⏳ **Remaining glue:** a `ContainerGenerationOps` so the window/finetune/eval actually execute
+  *inside* the `darwin-agent`/`darwin-finetune`/`darwin-eval` images (today the loop runs via
+  `LocalGenerationOps` on the local FS; the sandbox specs/runner/Dockerfiles exist but aren't yet
+  the execution path) — needs an in-container mutation entrypoint, a writable eval scores mount,
+  and path mapping.
 
 **Invariants already enforced in code:** only the controller patches post-benchmark fields
 (§7.2); there is no agent-facing global-memory write path (§7.3); the global-memory pass is
