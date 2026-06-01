@@ -38,6 +38,7 @@ from darwin.controller.population import Model
 from darwin.controller.state import OffspringState
 from darwin.cost import CostLedger
 from darwin.finetune import FinetuneBackend
+from darwin.fsutil import force_rmtree
 from darwin.memory import MemoryStore
 from darwin.memory.store import GLOBAL_SECTIONS
 from darwin.mutation_agent.checkpoint import GitCheckpointer
@@ -70,6 +71,10 @@ class ContainerGenerationOps:
     smoke_command: list[str]
     container_runner: ContainerRunner = field(default_factory=DockerContainerRunner)
     agent_image: str = "darwin-agent"
+    # Agent network policy (§8.3): "whitelist" (default, the egress-firewalled network) or "open"
+    # (host network, dev-only — used by the test profile's real-Claude path to reach the API
+    # without standing up the whitelist proxy; never for real autonomous runs, TEST_RUN_PLAN §6).
+    agent_network: str = "whitelist"
     base_model: str = "base"
     agent_env: dict[str, str] = field(default_factory=dict)  # API keys etc. passed into the window
     # §6.2 host-only held-out slice provider: slice_id -> the slice dir bind-mounted read-only
@@ -125,7 +130,7 @@ class ContainerGenerationOps:
         mutator_name = state.mutator or "claude"  # schema needs a non-empty mutator (§7.2)
         scratch = self.workspace / offspring.name / "scratch"
         if scratch.exists():
-            shutil.rmtree(scratch)  # fresh window: no stale result/store from a prior attempt
+            force_rmtree(scratch)  # fresh window: no stale result/store from a prior attempt
         scratch.mkdir(parents=True, exist_ok=True)
 
         container_store_root = f"{SCRATCH_PATH}/store"
@@ -149,10 +154,32 @@ class ContainerGenerationOps:
             env=env,
         )
         spec.image = self.agent_image
+        spec.network = self.agent_network  # §8.3: whitelist (default) or open (dev-only, §6)
 
         result = self.container_runner.run(spec)
 
+        # Always persist the agent container's full output (entrypoint + `[claude]` session lines:
+        # start/end, ResultMessage, tool-use count) to a stable per-model log for auditing.
+        log = ((result.stdout or "") + "\n" + (result.stderr or "")).strip()
+        log_path = self.workspace / offspring.name / "agent.log"
+        try:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log_path.write_text(log, encoding="utf-8")
+        except OSError:  # pragma: no cover - best-effort logging
+            pass
+
         payload = self._read_result(scratch / "result.json")
+        mutation_failed = (
+            True if payload is None else bool(payload.get("mutation_failed", True))
+        ) or (not result.ok)
+        # One-line summary per offspring + (on failure) the log tail, so a window that "finished
+        # instantly with no work" tells you why instead of being silent.
+        print(
+            f"[darwin] {offspring.name} window: exit={result.exit_code} "
+            f"mutation_failed={mutation_failed} log={log_path}"
+        )
+        if mutation_failed and log:
+            print(f"[darwin] --- {offspring.name} container log tail ---\n{log[-2500:]}\n[darwin] --- end ---")
         if not result.ok and payload is None:
             # the container crashed and wrote nothing: the genome is whatever the agent left;
             # treat as a failed mutation and report the current HEAD (the clone of S, or a green
@@ -196,6 +223,11 @@ class ContainerGenerationOps:
             "DARWIN_WINDOW_H": str(m.mutation_window_h),
             "DARWIN_SOFT_DEADLINE_MIN": str(m.soft_deadline_min),
             "DARWIN_KILL_GRACE_MIN": str(m.kill_grace_min),
+            # directive style + Claude session knobs (real-Claude path; ignored by mock/local)
+            "DARWIN_DIRECTIVE_STYLE": m.directive_style,
+            "DARWIN_CLAUDE_MODEL": m.claude_model,
+            "DARWIN_CLAUDE_EFFORT": m.claude_effort,
+            "DARWIN_CLAUDE_MAX_BUDGET_USD": str(m.claude_max_budget_usd),
         }
 
     def _ensure_model_memory_dir(self, model: str) -> Path:

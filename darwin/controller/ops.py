@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from darwin.fsutil import force_rmtree
 from darwin.bench.job import BenchmarkBackend, BenchmarkJob
 from darwin.config import DarwinConfig
 from darwin.controller.controller import FinetuneOutcomeView, MutateOutcome
@@ -88,7 +89,7 @@ class LocalGenerationOps:
         if not (genome / ".git").exists():
             # clone S's genome into the offspring slot (genome files only, not S's git history)
             if genome.exists():
-                shutil.rmtree(genome)
+                force_rmtree(genome)
             genome.parent.mkdir(parents=True, exist_ok=True)
             shutil.copytree(
                 parent.genome_dir, genome, ignore=shutil.ignore_patterns(".git")

@@ -15,3 +15,10 @@ venv/
 .pytest_cache/
 runs/*
 !runs/.gitkeep
+# runtime population dirs the loop writes (genome clones, adapters); keep the dir, not its output
+models/*
+!models/.gitkeep
+# per-model memory notebooks written each window (global/ is curated + tracked)
+memory/models/
+# synthetic eval slice dirs the test profile auto-creates
+eval_slices/

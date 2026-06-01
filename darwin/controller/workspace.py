@@ -26,6 +26,7 @@ import shutil
 from pathlib import Path
 
 from darwin.controller.population import Model, Population
+from darwin.fsutil import force_rmtree
 
 GENOME = "genome"
 ADAPTER = "adapter.bin"
@@ -75,7 +76,7 @@ def bootstrap_population(
     for name in survivor_names:
         g = genome_dir(ws, name)
         if g.exists():
-            shutil.rmtree(g)
+            force_rmtree(g)
         g.parent.mkdir(parents=True, exist_ok=True)
         shutil.copytree(base, g, ignore=shutil.ignore_patterns(".git"))
         models.append(
@@ -101,7 +102,7 @@ def reset_slot(workspace: Path | str, name: str) -> None:
     """Wipe a model's genome + adapter so the next spawn re-clones fresh (drop step)."""
     g = genome_dir(workspace, name)
     if g.exists():
-        shutil.rmtree(g)
+        force_rmtree(g)
     a = adapter_path(workspace, name)
     if a.exists():
         a.unlink()
@@ -124,7 +125,7 @@ def materialize_model(
     dst_genome = genome_dir(ws, name)
     if Path(genome_src).resolve() != dst_genome.resolve():
         if dst_genome.exists():
-            shutil.rmtree(dst_genome)
+            force_rmtree(dst_genome)
         dst_genome.parent.mkdir(parents=True, exist_ok=True)
         shutil.copytree(genome_src, dst_genome)
     if adapter_src is not None:
@@ -136,5 +137,5 @@ def materialize_model(
         dst_mem = model_dir(ws, name) / MEMORY
         if Path(memory_src).resolve() != dst_mem.resolve():
             if dst_mem.exists():
-                shutil.rmtree(dst_mem)
+                force_rmtree(dst_mem)
             shutil.copytree(memory_src, dst_mem)

@@ -20,12 +20,42 @@ Invariants enforced here (so they can't be forgotten at a call site):
 
 from __future__ import annotations
 
+import os
+import re
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import Literal
 
 NetworkMode = Literal["none", "whitelist", "open"]
 DOCKER_SOCKET = "/var/run/docker.sock"
+
+# A Windows host path: a drive letter + `:` + a separator (e.g. `C:\Users\x`, `C:/Users/x`).
+_WINDOWS_DRIVE_PATH = re.compile(r"^[A-Za-z]:[\\/]")
+
+
+def normalize_host_path(host: str) -> str:
+    """Make a host path safe for the `-v host:container[:mode]` arg (§8.2, Windows fix).
+
+    Two corrections, both required for `docker run -v` to bind-mount a host directory:
+
+    1. **Absolute.** A bind mount needs an absolute host path; a relative one (`models\\s0`) is
+       read as a *named volume* and rejected (`invalid characters for a local volume name`).
+       Relative paths are resolved against the current working directory.
+    2. **Forward slashes on Windows.** `-v` splits on `:`, and a Windows path carries both a
+       drive-letter `:` and `\\` separators that break that parsing. Docker Desktop (Linux
+       containers / WSL2 backend) accepts the `C:/Users/x` form and still recognizes the
+       drive-letter colon, so backslashes in a drive-rooted path are converted to `/`.
+
+    POSIX absolute paths pass through unchanged, so this is a no-op on Linux/macOS hosts.
+    """
+    already_absolute = (
+        os.path.isabs(host) or host.startswith("/") or bool(_WINDOWS_DRIVE_PATH.match(host))
+    )
+    if not already_absolute:
+        host = os.path.abspath(host)
+    if _WINDOWS_DRIVE_PATH.match(host):
+        return host.replace("\\", "/")
+    return host
 
 # the default name of the pre-created user-defined network whose egress firewall implements the
 # §8.3 whitelist (created by infra setup, e.g. containers/setup_whitelist_network.sh).
@@ -42,7 +72,7 @@ class Mount:
 
     def to_arg(self) -> str:
         suffix = ":ro" if self.read_only else ":rw"
-        return f"{self.host_path}:{self.container_path}{suffix}"
+        return f"{normalize_host_path(self.host_path)}:{self.container_path}{suffix}"
 
 
 @dataclass(frozen=True)
