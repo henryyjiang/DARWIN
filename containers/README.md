@@ -22,6 +22,9 @@ Hub, PyPI, the Anthropic API, the internal MCP server); the eval image has zero 
 - `setup_whitelist_network.sh` — creates the `darwin-egress` user-defined network the
   whitelist containers attach to, and documents the §8.3 allow-list (enforce egress filtering
   via a forward proxy / iptables; the bridge driver alone does not filter by hostname).
+- `smoke-local/` — a GPU-free end-to-end smoke test of the local-model (OpenHands) mutation path:
+  Ollama serves a small model over an OpenAI-compatible endpoint and a real `backend="local"`
+  window runs against it. Validation/debugging only; see `smoke-local/README.md`.
 
 ## How the controller launches these
 The Python side is `darwin/sandbox/` — `ContainerSpec` + `build_docker_run_args` (pure, tested)

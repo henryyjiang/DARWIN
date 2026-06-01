@@ -1,0 +1,45 @@
+# GPU-free end-to-end smoke test of the local-model (OpenHands) mutation path.
+#
+# `ollama` serves a small, tool-capable model behind an OpenAI-compatible endpoint; `darwin` runs a
+# real `backend="local"` mutation window against it (scripts/smoke_local.py). No GPU, no vLLM.
+#
+# Usage (from this directory):
+#   docker compose up --build -d ollama
+#   docker compose exec ollama ollama pull qwen2.5-coder:7b   # one-time; ~4.7GB
+#   docker compose run --rm darwin
+#
+# Override the model with `SMOKE_MODEL=... docker compose run --rm darwin` (pull it first).
+
+services:
+  ollama:
+    image: ollama/ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  darwin:
+    build:
+      context: ../..
+      dockerfile: containers/smoke-local/Dockerfile
+    depends_on:
+      ollama:
+        condition: service_healthy
+    # Overlay the live repo so code edits are picked up without a rebuild (editable install).
+    volumes:
+      - ../..:/app
+    working_dir: /app
+    environment:
+      OLLAMA_BASE_URL: http://ollama:11434/v1
+      SMOKE_MODEL: ${SMOKE_MODEL:-qwen2.5-coder:7b}
+      # Uncomment to lengthen the window for a slow CPU model:
+      # DARWIN_WINDOW_H: "0.34"
+    command: ["python", "scripts/smoke_local.py"]
+
+volumes:
+  ollama:

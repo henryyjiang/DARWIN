@@ -253,11 +253,10 @@ Key config switches (`DarwinConfig`, defaults from §10.1): `mutation.backend` (
 uv run --python 3.14 --extra dev python -m pytest -q     # 323 passing
 ```
 
-> The heavy `local`-extra deps (`vllm`, `openhands-ai`) are environment-marked to
-> `sys_platform == 'linux'` + Python `>=3.12,<3.14` (openhands-ai doesn't support 3.14), so uv's
-> universal resolution stays satisfiable and the Windows/3.14 dev host installs + tests without
-> them — they're lazy-imported and never touched by the suite. A Linux 3.12/3.13 GPU host gets
-> them with `--extra local`.
+> The heavy `local`-extra deps (`vllm`, `openhands-sdk`, `openhands-tools`) are environment-marked
+> to `sys_platform == 'linux'` + Python `>=3.12`, so uv's universal resolution stays satisfiable
+> and the Windows/3.14 dev host installs + tests without them — they're lazy-imported and never
+> touched by the suite. A Linux 3.12+ GPU host gets them with `--extra local`.
 
 **What the unit tests cover (no infra needed):** config; GA + selection + diversity; the full
 controller loop with fakes incl. crash/resume + budget `deferred`; the mutation lifecycle (smoke,
