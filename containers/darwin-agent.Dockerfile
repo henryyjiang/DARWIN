@@ -17,19 +17,37 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends git build-essential ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
+ARG HARNESS=agent
+
+# The Claude Agent SDK (`agent` harness, §4.5) is only a Python wrapper that drives the headless
+# Claude Code CLI — so the CLI binary (Node) must be on PATH, or ClaudeSDKClient raises
+# CLINotFoundError and every mutation reverts. Install Node + the CLI for the agent harness only.
+# Placed BEFORE the source COPY so this heavy layer is cached across DARWIN code changes. Set
+# ANTHROPIC_API_KEY at run time.
+RUN if [ "$HARNESS" = "agent" ]; then \
+        apt-get update \
+        && apt-get install -y --no-install-recommends nodejs npm \
+        && npm install -g @anthropic-ai/claude-code \
+        && npm cache clean --force \
+        && rm -rf /var/lib/apt/lists/* \
+        && claude --version; \
+    fi
+
 # Non-root user — the agent never needs root inside the sandbox.
 RUN useradd --create-home --uid 1000 darwin
 WORKDIR /opt/darwin
 
 # Install the DARWIN package + the chosen harness extra.
-ARG HARNESS=agent
 COPY pyproject.toml README.md ./
 COPY darwin ./darwin
 RUN pip install --no-cache-dir ".[${HARNESS}]"
 
 # git identity for the offspring branch commits (§4.4); overridable at runtime.
+# `safe.directory=*` so git trusts the bind-mounted genome repo even though it is owned by the
+# host user, not the in-container uid 1000 (avoids "detected dubious ownership", §3.6/§8.1).
 RUN git config --system user.name "DARWIN" \
-    && git config --system user.email "darwin@local"
+    && git config --system user.email "darwin@local" \
+    && git config --system --add safe.directory '*'
 
 USER darwin
 WORKDIR /work/genome

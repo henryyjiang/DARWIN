@@ -1,0 +1,83 @@
+# DARWIN v2 — REAL-Claude opt-in test config (TEST_RUN_PLAN.md §5 step 4 / §6).
+#
+# Like run.test.yaml (real Docker, mock finetune/eval) but validates the live agent + global-memory
+# pathways against the Anthropic API, with spend bounded hard:
+#   - ONE offspring per generation uses the real Claude mutator (claude_sample: 1); the rest mock.
+#   - the agent gets the "small" directive (make one small green change, not the 32B mission).
+#   - a ~5-minute wall-clock window + an SDK max_budget_usd cap per session.
+#   - the global-memory pass runs the real (wall-clock-capped) Claude synthesizer.
+#
+# Requires ANTHROPIC_API_KEY in the environment (see the command at the bottom).
+#
+# IMPORTANT: start from a CLEAN run state — the controller resumes completed generations, so a
+# leftover runs/gen_0 from a prior run.test.yaml run makes this finish instantly without calling
+# Claude. Use -Fresh (which wipes models/ runs/ eval_slices/ memory/models) or clear them by hand.
+#
+#   $env:ANTHROPIC_API_KEY = "sk-ant-..."
+#   ./scripts/test_run.ps1 -Fresh -SkipBuild -RealClaude -Config run.claude.yaml -Generations 1
+#   # manual equivalent:
+#   #   Remove-Item -Recurse -Force runs\gen_*, models\o*, memory\models -ErrorAction SilentlyContinue
+#   #   uv run python -m darwin --config run.claude.yaml --generations 1
+
+generations: 1
+mode: container
+profile: test
+
+paths:
+  workspace: models
+  runs: runs
+  memory: memory
+  base_genome: base_genome
+  cost_ledger: runs/cost.jsonl
+  eval_slices: eval_slices
+
+images:
+  agent: darwin-agent
+  finetune: darwin-agent
+  eval: darwin-agent
+commands:
+  finetune: ["python", "-m", "darwin.finetune.mock_entrypoint"]
+  benchmark: ["python", "-m", "darwin.bench.mock_entrypoint"]
+
+smoke_command: ["python", "smoke_test.py"]
+
+# The agent container needs to reach api.anthropic.com. The `darwin-egress` user network is a
+# plain bridge here (no egress firewall is actually provisioned in this dev test), so it already
+# permits outbound internet — and it's more reliable than host networking on Docker Desktop/Windows.
+# Use "open" (host net) only if your bridge somehow lacks egress. (Real autonomous runs want the
+# §8.3 whitelist *firewall* on this network; that's out of scope for the test.)
+agent_network: whitelist
+
+# Real, wall-clock-capped (5 min) Claude global-memory pass. Pick a cheap/fast model to bound cost;
+# leave blank to use the default. If the model name is unavailable the capped pass just falls back
+# to the current memory (the run never stalls).
+real_global_memory: true
+global_memory_effort: low
+# Sonnet supports the synthesizer's structured-output + thinking features (Haiku rejects adaptive
+# thinking). The synthesizer also auto-retries without adaptive thinking, so cheaper models degrade
+# gracefully. Still cheap for one capped call/generation.
+global_memory_model: claude-sonnet-4-6
+
+seed_scores:
+  s0: {humaneval+: 0.50, gsm8k: 0.42}
+  s1: {humaneval+: 0.49, gsm8k: 0.41}
+  s2: {humaneval+: 0.51, gsm8k: 0.43}
+  s3: {humaneval+: 0.48, gsm8k: 0.40}
+  s4: {humaneval+: 0.50, gsm8k: 0.44}
+
+config:
+  # 6 models = 5 survivors + 1 offspring, so only ONE model is created per generation (cheapest
+  # meaningful run). With claude_sample: 1 that single offspring uses the real Claude mutator.
+  ga: {population_size: 6, num_survivors: 5, diversity_pick: false}
+  mutation:
+    backend: mock           # only matters if there were extra offspring; here the 1 offspring is sampled
+    claude_sample: 1        # the single offspring/generation uses the real Claude mutator
+    mutation_window_h: 0.083  # ~5 min hard wall-clock window
+    soft_deadline_min: 1
+    directive_style: small  # "make one small green change", not the full architecture mission
+    claude_effort: low
+    claude_max_budget_usd: 1.0   # SDK hard per-session spend cap (safety)
+    claude_model: claude-haiku-4-5-20251001   # valid per `GET /v1/models`; cheap/fast for the test
+  cost: {gen_budget_usd: 0, gpu_rate_usd_per_h: 1.79}
+  benchmark: {suite: ["humaneval+", "gsm8k"], eval_rotation: true, num_eval_slices: 3}
+  antigaming: {enabled: false}

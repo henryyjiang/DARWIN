@@ -203,7 +203,7 @@ class Controller:
 
         offspring_states = []
         reset_slot = getattr(self.ops, "reset_offspring_slot", None)
-        for slot_name, plan in zip(offspring_slots, plans):
+        for index, (slot_name, plan) in enumerate(zip(offspring_slots, plans)):
             # Drop step (§3.2): clear the slot vacated by a culled model before re-cloning, so the
             # resting set on disk is the survivors. Runs once here (fresh state only) — a resume
             # loads existing state and never re-enters this branch, so in-progress work is safe.
@@ -214,7 +214,7 @@ class Controller:
                     name=slot_name,
                     parent_survivor=plan.parent_survivor,
                     mutator=plan.mutator,
-                    backend=self._mutation_backend(plan),
+                    backend=self._mutation_backend(plan, index),
                     iteration=self._next_iteration(slot_name),
                 )
             )
@@ -229,11 +229,22 @@ class Controller:
         self.state_store.save(state)
         return state
 
-    def _mutation_backend(self, plan: OffspringPlan) -> str:
-        """Resolve the mutation backend for an offspring (§4.7 / §3.2 fallback)."""
+    def _mutation_backend(self, plan: OffspringPlan, index: int = 0) -> str:
+        """Resolve the mutation backend for an offspring (§4.7 / §3.2 fallback).
+
+        `index` is the offspring's position this generation; the first `mutation.claude_sample`
+        offspring use the real Claude mutator regardless of `backend` (the §3.5 spend-capped SDK
+        validation knob). Otherwise: `mock` routes to the offline mock backend; `local`/`mixed`
+        route to the local model (when a distinct mutator exists); everything else to Claude.
+        """
+        if index < self.config.mutation.claude_sample:
+            return "claude"
+        backend = self.config.mutation.backend
+        if backend == "mock":
+            return "mock"
         if plan.mutator is None:
             return "claude"  # degenerate <2-survivor case: no distinct local mutator (§3.2)
-        return "local" if self.config.mutation.backend in ("local", "mixed") else "claude"
+        return "local" if backend in ("local", "mixed") else "claude"
 
     def _next_iteration(self, model: str) -> int:
         nums = self.store.iteration_numbers(model)
