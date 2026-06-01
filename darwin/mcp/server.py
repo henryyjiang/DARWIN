@@ -14,6 +14,7 @@ Run as a stdio MCP server:
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 from typing import Any
 
@@ -151,15 +152,46 @@ def create_server(
     return server
 
 
+def build_agent_server_from_env(env: dict[str, str] | None = None) -> FastMCP:
+    """Build the darwin-mcp server for an in-container mutation window from its `DARWIN_*` env.
+
+    The agent backend (e.g. the Claude SDK) launches this as a stdio MCP server *inside* the
+    mutation container, where the window's parameters are already in the environment. When
+    `DARWIN_OFFSPRING_ID` is set we reconstruct the same `MutationContext` the entrypoint uses and
+    bind the agent's `smoke.run`/`finalize` (and `memory.*`) tools to it — so a passing smoke test
+    auto-commits a green checkpoint on the mounted genome and `memory.write_iteration` lands in the
+    scratch store the host later ingests (§7.2). With no offspring id, it's a read/write
+    memory-only server (the original behavior).
+    """
+    env = dict(os.environ if env is None else env)
+    # Lazy import to avoid any import cycle and keep the memory-only path light.
+    from darwin.mutation_agent.entrypoint import MutationRunConfig, build_context
+
+    cfg = MutationRunConfig.from_env(env)
+    store = MemoryStore(cfg.store_root)
+    if not cfg.offspring_id:
+        return create_server(store)
+    ctx = build_context(cfg, store=store)
+    # Retrieval tools reach the network (arXiv/HF); skip them for the focused "small" test directive.
+    enable_retrieval = env.get("DARWIN_DIRECTIVE_STYLE", "full") != "small"
+    return create_server(store, agent_context=ctx, enable_retrieval=enable_retrieval)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the darwin-mcp stdio server.")
     parser.add_argument(
         "--root",
-        default=".",
-        help="Repo root containing models/ and memory/global/ (default: cwd).",
+        default=None,
+        help="Repo root containing models/ and memory/global/ (default: $DARWIN_STORE_ROOT or cwd).",
     )
     args = parser.parse_args()
-    server = create_server(MemoryStore(Path(args.root)))
+    # In a mutation window (DARWIN_OFFSPRING_ID set) bind the agent tools to the window's context;
+    # otherwise serve memory over --root (or $DARWIN_STORE_ROOT, or cwd).
+    if os.environ.get("DARWIN_OFFSPRING_ID") and args.root is None:
+        server = build_agent_server_from_env()
+    else:
+        root = args.root or os.environ.get("DARWIN_STORE_ROOT") or "."
+        server = create_server(MemoryStore(Path(root)))
     server.run()
 
 

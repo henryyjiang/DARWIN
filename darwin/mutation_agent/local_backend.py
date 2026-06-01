@@ -125,15 +125,20 @@ def make_mutation_backend_factory(
 ) -> Callable[[str, MutationContext], Any]:
     """A default `mutation_backend_factory` for `LocalGenerationOps` (§4.7 routing).
 
-    Maps the per-offspring backend name to a concrete backend: `local` → `LocalMutationBackend`
-    (requires a `serve_config`); anything else (`claude`, and the degenerate <2-survivor
-    fallback) → `ClaudeMutationBackend`. Both attach the same `darwin-mcp` so the directive and
-    tools are identical across backends (§9.4).
+    Maps the per-offspring backend name to a concrete backend: `mock` → `MockMutationBackend` (the
+    offline test-profile mutator, §3.3); `local` → `LocalMutationBackend` (requires a
+    `serve_config`); anything else (`claude`, and the degenerate <2-survivor fallback) →
+    `ClaudeMutationBackend`. The live backends attach the same `darwin-mcp` so the directive and
+    tools are identical across them (§9.4).
     """
     # Lazy import to avoid a hard dependency cycle / keep import light.
     from darwin.mutation_agent.claude_backend import ClaudeMutationBackend
 
     def factory(backend_name: str, ctx: MutationContext) -> Any:
+        if backend_name == "mock":
+            from darwin.mutation_agent.mock_backend import MockMutationBackend
+
+            return MockMutationBackend()
         if backend_name == "local":
             if serve_config is None:
                 raise ValueError("local backend requires a VLLMServeConfig (serve_config)")

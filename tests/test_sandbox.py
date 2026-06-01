@@ -57,6 +57,34 @@ def test_resource_and_env_and_mounts_render():
     assert args[i + 1] == "DARWIN_A=2"
 
 
+def test_windows_host_paths_normalized_for_docker_v(tmp_path):
+    """A Windows host path (drive letter + backslashes) becomes Docker's forward-slash form (§3.6)."""
+    from darwin.sandbox import normalize_host_path
+
+    # backslash drive path -> forward slashes, drive-letter colon kept (Docker Desktop form)
+    assert normalize_host_path(r"C:\Users\henry\genome") == "C:/Users/henry/genome"
+    assert normalize_host_path("C:/Users/henry/genome") == "C:/Users/henry/genome"
+    # lowercase drive + mixed separators
+    assert normalize_host_path(r"d:\runs\models\o0") == "d:/runs/models/o0"
+    # POSIX paths pass through unchanged (no-op on Linux/macOS hosts)
+    assert normalize_host_path("/h/genome") == "/h/genome"
+
+    # the mount arg keeps exactly one `:` per field boundary the docker CLI expects
+    arg = Mount(r"C:\Users\henry\genome", "/work/genome", read_only=False).to_arg()
+    assert arg == "C:/Users/henry/genome:/work/genome:rw"
+
+
+def test_relative_host_path_is_made_absolute():
+    """A relative bind-mount host path (read by docker as a named volume) is absolutized (§3.6)."""
+    import os
+
+    from darwin.sandbox import normalize_host_path
+
+    out = normalize_host_path(os.path.join("models", "s0"))
+    assert os.path.isabs(out.replace("/", os.sep)) or out.startswith(("/", "//")) or ":" in out[:3]
+    assert "\\" not in out  # no backslashes survive into the docker -v arg
+
+
 def test_docker_socket_mount_is_refused():
     spec = ContainerSpec(image="i", mounts=[Mount(DOCKER_SOCKET, DOCKER_SOCKET, read_only=False)])
     with pytest.raises(ValueError, match="Docker socket"):

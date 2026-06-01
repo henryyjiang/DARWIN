@@ -37,16 +37,37 @@ from darwin.mutation_agent.directive import (
 ALLOWED_TOOLS = ["Bash", "Edit", "Write", "Read", "Glob", "Grep"]
 
 
-def build_agent_options(ctx: MutationContext, mcp_servers: dict[str, Any]) -> dict[str, Any]:
-    """The ClaudeAgentOptions kwargs for an offspring's session (pure → testable)."""
-    return {
+def build_agent_options(
+    ctx: MutationContext,
+    mcp_servers: dict[str, Any],
+    *,
+    system_prompt: str = DIRECTIVE_SYSTEM_PROMPT,
+    model: str | None = None,
+    effort: str | None = None,
+    max_budget_usd: float | None = None,
+) -> dict[str, Any]:
+    """The ClaudeAgentOptions kwargs for an offspring's session (pure → testable).
+
+    Each attached MCP server's tools are allow-listed as `mcp__<name>` so the agent can actually
+    call `smoke.run` / `memory.*` (without this, `allowed_tools` would gate them out). `model`,
+    `effort`, and `max_budget_usd` (a hard per-session SDK spend cap) are included only when set.
+    """
+    allowed = list(ALLOWED_TOOLS) + [f"mcp__{name}" for name in mcp_servers]
+    opts: dict[str, Any] = {
         "cwd": str(ctx.genome_dir),
         "permission_mode": "bypassPermissions",  # safe only inside the sandbox (§8)
-        "allowed_tools": list(ALLOWED_TOOLS),
+        "allowed_tools": allowed,
         "mcp_servers": mcp_servers,  # darwin-mcp: memory.*, smoke.run, finalize, paper.*, data.*
-        "system_prompt": DIRECTIVE_SYSTEM_PROMPT,
+        "system_prompt": system_prompt,
         "max_turns": None,  # bounded by wall-clock, not turns
     }
+    if model:
+        opts["model"] = model
+    if effort:
+        opts["effort"] = effort
+    if max_budget_usd:
+        opts["max_budget_usd"] = max_budget_usd  # SDK hard spend cap (cost guard)
+    return opts
 
 
 def next_injection(
@@ -68,9 +89,18 @@ class ClaudeMutationBackend:
         self,
         mcp_servers: dict[str, Any] | None = None,
         transcript_path: Path | str | None = None,
+        *,
+        system_prompt: str = DIRECTIVE_SYSTEM_PROMPT,
+        model: str | None = None,
+        effort: str | None = None,
+        max_budget_usd: float | None = None,
     ):
         self.mcp_servers = mcp_servers or {}
         self.transcript_path = Path(transcript_path) if transcript_path else None
+        self.system_prompt = system_prompt
+        self.model = model
+        self.effort = effort
+        self.max_budget_usd = max_budget_usd
 
     def run(self, ctx: MutationContext, deadline: DeadlineManager) -> None:
         """Synchronous entry point for the orchestrator; drives the async session."""
@@ -82,20 +112,41 @@ class ClaudeMutationBackend:
         # Lazy import: the SDK + a sandbox + the API are only needed for a live run.
         from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions
 
-        options = ClaudeAgentOptions(**build_agent_options(ctx, self.mcp_servers))
+        options = ClaudeAgentOptions(**build_agent_options(
+            ctx, self.mcp_servers, system_prompt=self.system_prompt, model=self.model,
+            effort=self.effort, max_budget_usd=self.max_budget_usd,
+        ))
+        # Diagnostics (captured in the container log): if a session does nothing, these tell us
+        # whether it produced messages/tool calls or ended on an error. Errors are printed and
+        # re-raised so the window also exits non-zero.
+        print(f"[claude] session start: model={self.model or 'default'} "
+              f"effort={self.effort or 'default'} mcp={list(self.mcp_servers)}", flush=True)
+        n_msgs = n_tools = 0
         soft_sent = False
-        async with ClaudeSDKClient(options) as client:
-            await client.query(ctx.directive)
-            async for message in client.receive_response():
-                self._log(message)
-                phase = deadline.phase()
-                injection, soft_sent = next_injection(
-                    phase, deadline.remaining(), soft_sent
-                )
-                if injection is not None:
-                    await client.query(injection)
-                if phase in (Phase.HARD, Phase.KILL):
-                    break
+        try:
+            async with ClaudeSDKClient(options) as client:
+                await client.query(ctx.directive)
+                async for message in client.receive_response():
+                    self._log(message)
+                    n_msgs += 1
+                    kind = type(message).__name__
+                    if "ToolUse" in kind or "tool_use" in repr(message)[:80]:
+                        n_tools += 1
+                    if kind in ("ResultMessage", "SystemMessage"):
+                        print(f"[claude] {kind}: {str(message)[:600]}", flush=True)
+                    phase = deadline.phase()
+                    injection, soft_sent = next_injection(
+                        phase, deadline.remaining(), soft_sent
+                    )
+                    if injection is not None:
+                        await client.query(injection)
+                    if phase in (Phase.HARD, Phase.KILL):
+                        break
+        except Exception as exc:  # surface SDK/CLI/auth errors into the container log, then fail
+            print(f"[claude] session ERROR: {type(exc).__name__}: {exc}", flush=True)
+            raise
+        finally:
+            print(f"[claude] session end: messages={n_msgs} tool_uses={n_tools}", flush=True)
 
     def _log(self, message: Any) -> None:
         if self.transcript_path is None:

@@ -42,7 +42,7 @@ _FRONTMATTER_ORDER = [
     "papers_cited",
 ]
 
-_VALID_BACKENDS = {"local", "claude"}
+_VALID_BACKENDS = {"local", "claude", "mock"}  # "mock": the offline test-profile backend (§3.3)
 
 
 class MemoryValidationError(ValueError):
@@ -64,7 +64,7 @@ class IterationMemory:
     generation: int
     parent_survivor: str  # the genome this offspring was cloned from
     mutator: str  # who edited it (self if local backend)
-    backend: str  # "local" | "claude"
+    backend: str  # "local" | "claude" | "mock"
     base_fitness: float  # parent's fitness at clone time
     cost_usd: float
 

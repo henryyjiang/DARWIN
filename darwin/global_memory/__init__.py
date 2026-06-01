@@ -18,7 +18,9 @@ Layering (mirrors the "two interchangeable AI backends" principle, §1.4):
 from darwin.global_memory.digest import GenerationDigest, collect_generation
 from darwin.global_memory.synthesizer import (
     Synthesizer,
+    CappedSynthesizer,
     ClaudeSynthesizer,
+    MockSynthesizer,
     parse_global_memory,
 )
 from darwin.global_memory.pass_run import run_global_memory_pass
@@ -28,6 +30,8 @@ __all__ = [
     "collect_generation",
     "Synthesizer",
     "ClaudeSynthesizer",
+    "MockSynthesizer",
+    "CappedSynthesizer",
     "parse_global_memory",
     "run_global_memory_pass",
 ]

@@ -1,0 +1,56 @@
+# DARWIN v2 — budget-free full-run test config (the "demo profile"), see TEST_RUN_PLAN.md.
+#
+# Runs the REAL generational loop in REAL Docker containers for several generations, substituting
+# only the two things that cost money/time: the GPU finetune/eval (mock entrypoints) and the
+# multi-hour agent/global-memory sessions (mock backend/synthesizer; opt-in real Claude below).
+#
+#   uv run darwin --config run.test.yaml --generations 3
+
+generations: 3
+mode: container            # real Docker; the test profile sets mock images/commands + short windows
+profile: test              # default: mock mutator, mock synth, mock finetune/eval, short windows
+
+paths:
+  workspace: models
+  runs: runs
+  memory: memory
+  base_genome: base_genome
+  cost_ledger: runs/cost.jsonl
+  eval_slices: eval_slices  # mock eval ignores contents; the test profile auto-creates each slice id
+
+images:                    # test profile: one slim image for all three roles
+  agent: darwin-agent
+  finetune: darwin-agent
+  eval: darwin-agent
+commands:                  # mock entrypoints (the agent uses its image CMD = mutation entrypoint)
+  finetune: ["python", "-m", "darwin.finetune.mock_entrypoint"]
+  benchmark: ["python", "-m", "darwin.bench.mock_entrypoint"]
+
+smoke_command: ["python", "smoke_test.py"]
+
+# Agent container network (§8.3): "whitelist" needs no real egress for the mock mutator (the
+# darwin-egress network just has to exist). For the opt-in real-Claude mutator set "open" (host
+# network, dev-only) so the container can reach api.anthropic.com without the whitelist proxy.
+agent_network: whitelist
+
+# Opt-in: run the REAL (wall-clock-capped) Claude global-memory pass instead of the mock
+# synthesizer. Requires ANTHROPIC_API_KEY in the environment; otherwise the mock synth is used.
+real_global_memory: false
+
+seed_scores:               # gen-0 baseline so fitness normalizes
+  s0: {humaneval+: 0.50, gsm8k: 0.42}
+  s1: {humaneval+: 0.49, gsm8k: 0.41}
+  s2: {humaneval+: 0.51, gsm8k: 0.43}
+  s3: {humaneval+: 0.48, gsm8k: 0.40}
+  s4: {humaneval+: 0.50, gsm8k: 0.44}
+
+config:
+  ga: {population_size: 10, num_survivors: 5, diversity_pick: false}
+  mutation:
+    backend: mock           # set `claude` to exercise the real SDK path (needs key + egress)
+    mutation_window_h: 0.083  # ~5 min hard cap
+    soft_deadline_min: 1
+    claude_sample: 0        # >0: N offspring/gen use the real Claude mutator, the rest use `backend`
+  cost: {gen_budget_usd: 0, gpu_rate_usd_per_h: 1.79}   # gen_budget_usd>0 to test the §5.4 cap
+  benchmark: {suite: ["humaneval+", "gsm8k"], eval_rotation: true, num_eval_slices: 3}
+  antigaming: {enabled: false}     # turn on once the loop is confirmed

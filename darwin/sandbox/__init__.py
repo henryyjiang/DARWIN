@@ -35,6 +35,7 @@ from darwin.sandbox.spec import (
     Mount,
     ResourceLimits,
     build_docker_run_args,
+    normalize_host_path,
 )
 
 __all__ = [
@@ -42,6 +43,7 @@ __all__ = [
     "Mount",
     "ResourceLimits",
     "build_docker_run_args",
+    "normalize_host_path",
     "WHITELIST_NETWORK",
     "agent_container",
     "finetune_container",

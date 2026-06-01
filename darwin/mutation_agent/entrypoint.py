@@ -89,6 +89,10 @@ class MutationRunConfig:
     window_h: float = 3.0
     soft_deadline_min: float = 20.0
     kill_grace_min: float = 5.0
+    directive_style: str = "full"  # "full" (real mission) | "small" (test small-change directive)
+    claude_model: str = ""  # "" => SDK/CLI default model
+    claude_effort: str = ""  # "" => SDK default effort
+    claude_max_budget_usd: float = 0.0  # SDK hard per-session spend cap; 0 => none
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> "MutationRunConfig":
@@ -109,6 +113,10 @@ class MutationRunConfig:
             window_h=_env_float(env, "DARWIN_WINDOW_H", 3.0),
             soft_deadline_min=_env_float(env, "DARWIN_SOFT_DEADLINE_MIN", 20.0),
             kill_grace_min=_env_float(env, "DARWIN_KILL_GRACE_MIN", 5.0),
+            directive_style=env.get("DARWIN_DIRECTIVE_STYLE", "full") or "full",
+            claude_model=env.get("DARWIN_CLAUDE_MODEL", ""),
+            claude_effort=env.get("DARWIN_CLAUDE_EFFORT", ""),
+            claude_max_budget_usd=_env_float(env, "DARWIN_CLAUDE_MAX_BUDGET_USD", 0.0),
         )
 
 
@@ -131,6 +139,7 @@ def build_context(cfg: MutationRunConfig, *, store: MemoryStore | None = None) -
             parent_survivor=cfg.parent_survivor,
             mutator=cfg.mutator,
             generation=cfg.generation,
+            style=cfg.directive_style,
         ),
         checkpointer=GitCheckpointer(genome),
         smoke=SmokeTest(command=cfg.smoke_command),
@@ -174,16 +183,67 @@ def run_window(
     return result
 
 
-def _default_backend_factory() -> BackendFactory:  # pragma: no cover - live seam
-    """The live default: route claude/local, serving the local model for `local` (§4.6)."""
+def mcp_servers_config(env: dict[str, str]) -> dict:
+    """The darwin-mcp **stdio** server config for the in-container Claude session (pure).
+
+    Launches `python -m darwin.mcp.server`, which rebuilds this window's agent context from the
+    DARWIN_* env (`build_agent_server_from_env`) and binds `smoke.run` / `memory.*` / `finalize` to
+    the mounted genome + scratch store — so the agent can actually checkpoint and write memory. The
+    full env is forwarded so the child keeps both PATH and the DARWIN_* window parameters.
+    """
+    import sys
+
+    return {
+        "darwin": {
+            "type": "stdio",
+            "command": sys.executable,
+            "args": ["-m", "darwin.mcp.server"],
+            "env": dict(env),
+        }
+    }
+
+
+def _build_claude_backend(env: dict[str, str], ctx: MutationContext):
+    """Construct a `ClaudeMutationBackend` with darwin-mcp attached + the session knobs (testable)."""
+    from darwin.mutation_agent.claude_backend import ClaudeMutationBackend
+    from darwin.mutation_agent.directive import (
+        DIRECTIVE_SYSTEM_PROMPT,
+        SMALL_DIRECTIVE_SYSTEM_PROMPT,
+    )
+
+    style = env.get("DARWIN_DIRECTIVE_STYLE", "full") or "full"
+    system_prompt = SMALL_DIRECTIVE_SYSTEM_PROMPT if style == "small" else DIRECTIVE_SYSTEM_PROMPT
+    return ClaudeMutationBackend(
+        mcp_servers=mcp_servers_config(env),
+        system_prompt=system_prompt,
+        model=env.get("DARWIN_CLAUDE_MODEL") or None,
+        effort=env.get("DARWIN_CLAUDE_EFFORT") or None,
+        max_budget_usd=_env_float(env, "DARWIN_CLAUDE_MAX_BUDGET_USD", 0.0) or None,
+    )
+
+
+def _default_backend_factory(env: dict[str, str] | None = None) -> BackendFactory:
+    """The live default: route mock/local/claude; the claude path attaches darwin-mcp + knobs.
+
+    `mock`/`local` are delegated to the shared router; `claude` is built here so the in-container
+    session gets the stdio MCP server (smoke/memory tools) and the model/effort/budget knobs.
+    """
+    env = dict(os.environ if env is None else env)
     from darwin.mutation_agent.local_backend import make_mutation_backend_factory
 
     serve = None
-    if os.environ.get("DARWIN_BACKEND") == "local":
+    if env.get("DARWIN_BACKEND") == "local":
         from darwin.mutation_agent.vllm_serving import VLLMServeConfig
 
-        serve = VLLMServeConfig(base_model=os.environ.get("DARWIN_BASE_MODEL", ""))
-    return make_mutation_backend_factory(serve_config=serve)
+        serve = VLLMServeConfig(base_model=env.get("DARWIN_BASE_MODEL", ""))
+    base_factory = make_mutation_backend_factory(serve_config=serve)
+
+    def factory(backend_name: str, ctx: MutationContext):
+        if backend_name == "claude":
+            return _build_claude_backend(env, ctx)
+        return base_factory(backend_name, ctx)
+
+    return factory
 
 
 def main(
