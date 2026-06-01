@@ -33,14 +33,21 @@ RUN if [ "$HARNESS" = "agent" ]; then \
         && claude --version; \
     fi
 
+# uv: the resolver the harness extras are built against. The `local` extra pulls `openhands-sdk`,
+# whose core dep `lmnr` exact-pins opentelemetry-semantic-conventions while only ranging
+# opentelemetry-instrumentation — a graph pip's resolver declares impossible but uv backtracks
+# cleanly (the openhands-sdk uv.lock proves a consistent set exists). uv is a safe drop-in for the
+# `agent` extra too, so both harnesses install the same way.
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
 # Non-root user — the agent never needs root inside the sandbox.
 RUN useradd --create-home --uid 1000 darwin
 WORKDIR /opt/darwin
 
-# Install the DARWIN package + the chosen harness extra.
+# Install the DARWIN package + the chosen harness extra (one uv resolution pass).
 COPY pyproject.toml README.md ./
 COPY darwin ./darwin
-RUN pip install --no-cache-dir ".[${HARNESS}]"
+RUN uv pip install --system --no-cache ".[${HARNESS}]"
 
 # git identity for the offspring branch commits (§4.4); overridable at runtime.
 # `safe.directory=*` so git trusts the bind-mounted genome repo even though it is owned by the

@@ -21,16 +21,17 @@ dev = [
 agent = [
     "claude-agent-sdk>=0.1.0",
 ]
-# The local-model backend (§4.6): vLLM serving + the OpenHands harness. These are Linux + GPU
-# deployment deps, lazy-imported and never touched by the test suite (the pure config/command
-# builders and the backend contract work without them). They do NOT support every Python in the
-# project's range — notably openhands-ai requires Python >=3.12,<3.14 — so they are gated by
-# environment markers to the platform/Python they actually run on. This keeps uv's universal
-# resolution satisfiable and lets the Windows/3.14 dev host install + test without them; a Linux
-# 3.12/3.13 GPU host installs them with `--extra local`.
+# The local-model backend (§4.6): vLLM serving + the OpenHands V1 agent SDK harness
+# (openhands-sdk / openhands-tools). These are Linux + GPU deployment deps, lazy-imported and
+# never touched by the test suite (the pure config builders and the backend contract work without
+# them). They require Python >=3.12, so they are gated by environment markers to the platform/
+# Python they actually run on. This keeps uv's universal resolution satisfiable and lets the
+# Windows/3.14 dev host install + test without them; a Linux 3.12+ GPU host installs them with
+# `--extra local`.
 local = [
-    "vllm>=0.6; sys_platform == 'linux' and python_version >= '3.12' and python_version < '3.14'",
-    "openhands-ai>=0.10; sys_platform == 'linux' and python_version >= '3.12' and python_version < '3.14'",
+    "vllm>=0.6; sys_platform == 'linux' and python_version >= '3.12'",
+    "openhands-sdk>=1.24; sys_platform == 'linux' and python_version >= '3.12'",
+    "openhands-tools>=1.24; sys_platform == 'linux' and python_version >= '3.12'",
 ]
 
 [build-system]

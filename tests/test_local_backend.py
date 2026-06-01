@@ -19,6 +19,7 @@ from darwin.mutation_agent import (
 from darwin.mutation_agent.backend import MutationContext
 from darwin.mutation_agent.claude_backend import ClaudeMutationBackend
 from darwin.mutation_agent.directive import DIRECTIVE_SYSTEM_PROMPT
+from darwin.mutation_agent.local_backend import build_llm_kwargs, to_openhands_mcp_config
 
 
 def make_ctx(tmp_path: Path) -> MutationContext:
@@ -82,12 +83,51 @@ def test_local_backend_runs_through_window_with_fake_harness(tmp_path):
     assert captured["config"].base_url.endswith("/v1")
 
 
-def test_local_backend_default_runner_is_deferred(tmp_path):
+def test_local_backend_default_runner_needs_openhands(tmp_path):
+    # The default runner is the live OpenHands V1-SDK session; without the `local` extra installed
+    # it fails at the lazy `import openhands.sdk` — the genuinely-deferred part (needs GPU + deps).
     ctx = make_ctx(tmp_path)
     ctx.checkpointer.init_offspring("7")
     backend = LocalMutationBackend(serve_config=VLLMServeConfig(base_model="qwen"))
-    with pytest.raises(NotImplementedError):
+    with pytest.raises(ImportError):
         backend.run(ctx, never_ending_deadline())
+
+
+# ------------------------------------------------------------ OpenHands config (pure, §4.6)
+
+
+def test_build_llm_kwargs_targets_openai_compatible_endpoint(tmp_path):
+    ctx = make_ctx(tmp_path)
+    serve = VLLMServeConfig(base_model="qwen", served_model_name="m7", port=8001, api_key="k")
+    kwargs = build_llm_kwargs(build_harness_config(ctx, serve))
+    # litellm routes to the OpenAI-compatible vLLM endpoint via the `openai/` model prefix + base_url
+    assert kwargs == {"model": "openai/m7", "base_url": "http://127.0.0.1:8001/v1", "api_key": "k"}
+
+
+def test_to_openhands_mcp_config_translates_stdio_shape():
+    ours = {
+        "darwin": {
+            "type": "stdio",
+            "command": "python",
+            "args": ["-m", "darwin.mcp.server"],
+            "env": {"DARWIN_OFFSPRING_ID": "7"},
+        }
+    }
+    assert to_openhands_mcp_config(ours) == {
+        "mcpServers": {
+            "darwin": {
+                "command": "python",
+                "args": ["-m", "darwin.mcp.server"],
+                "env": {"DARWIN_OFFSPRING_ID": "7"},
+            }
+        }
+    }
+
+
+def test_to_openhands_mcp_config_empty_and_non_stdio():
+    assert to_openhands_mcp_config({}) == {}
+    # a non-stdio entry (e.g. sse) is skipped; an all-skipped input yields an empty config
+    assert to_openhands_mcp_config({"x": {"type": "sse", "url": "http://h/sse"}}) == {}
 
 
 # ------------------------------------------------------------------ factory (§4.7)

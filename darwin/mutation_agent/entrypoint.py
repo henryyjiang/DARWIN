@@ -235,8 +235,22 @@ def _default_backend_factory(env: dict[str, str] | None = None) -> BackendFactor
     if env.get("DARWIN_BACKEND") == "local":
         from darwin.mutation_agent.vllm_serving import VLLMServeConfig
 
-        serve = VLLMServeConfig(base_model=env.get("DARWIN_BASE_MODEL", ""))
-    base_factory = make_mutation_backend_factory(serve_config=serve)
+        # The serve endpoint is env-configurable so the harness can point at the in-container vLLM
+        # (the defaults: 127.0.0.1:8000, served as "darwin-local") or at an external OpenAI-
+        # compatible endpoint — e.g. an Ollama box for a GPU-free smoke test (containers/smoke-local).
+        serve = VLLMServeConfig(
+            base_model=env.get("DARWIN_BASE_MODEL", ""),
+            served_model_name=env.get("DARWIN_SERVE_MODEL_NAME") or "darwin-local",
+            host=env.get("DARWIN_SERVE_HOST") or "127.0.0.1",
+            port=_env_int(env, "DARWIN_SERVE_PORT", 8000),
+            api_key=env.get("DARWIN_SERVE_API_KEY") or "darwin-local",
+        )
+    # Attach the same darwin-mcp stdio server (memory/smoke/finalize/cost/paper/data) to the local
+    # OpenHands harness and the claude-fallback, so the tool surface matches the dedicated claude
+    # path (§9.4 parity). The OpenHands runner translates this to its native mcp_config shape.
+    base_factory = make_mutation_backend_factory(
+        serve_config=serve, mcp_servers=mcp_servers_config(env)
+    )
 
     def factory(backend_name: str, ctx: MutationContext):
         if backend_name == "claude":

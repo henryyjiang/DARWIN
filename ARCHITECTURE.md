@@ -811,10 +811,10 @@ Context a new session needs that isn't obvious from the repo alone:
 **Tooling.** The project standardizes on **`uv`** (the Windows host has no bare `python`; uv
 manages CPython 3.14.4). Layout/deps in `pyproject.toml`. Run the suite with:
 `uv run --python 3.14 --extra dev python -m pytest -q` — **308 tests passing**. (The heavy
-Linux/GPU-only `local`-extra deps — `vllm`, `openhands-ai` — are environment-marked to
-`sys_platform == 'linux'` + Python `>=3.12,<3.14` since `openhands-ai` doesn't support 3.14; this
-keeps uv's universal resolution satisfiable and the Windows/3.14 dev host installs + tests without
-them. They're lazy-imported and never touched by the suite.)
+Linux/GPU-only `local`-extra deps — `vllm`, `openhands-sdk`, `openhands-tools` — are
+environment-marked to `sys_platform == 'linux'` + Python `>=3.12`; this keeps uv's universal
+resolution satisfiable and the Windows/3.14 dev host installs + tests without them. They're
+lazy-imported and never touched by the suite.)
 
 **Code layout (actual).** All Python lives under a single importable `darwin/` package
 (`darwin.config`, `darwin.controller`, `darwin.mutation_agent`, `darwin.finetune`,
@@ -938,11 +938,7 @@ importable and cross-platform.
   full infra-failure re-provision/retry in the loop is treated as no-score for now (Phase 7
   hardening).
 
-**Phase 5 — local-model backend cores complete; live vLLM/OpenHands run deferred.**
-- ✅ **OpenAI-tool shim** (`darwin/mutation_agent/openai_tool_shim.py`, §9.3): translates MCP
-  tool schemas → OpenAI `tools=[...]` function specs, parses a function-call, dispatches to an
-  injected `invoke` callable, and wraps the result as a `role:"tool"` message (unknown-tool /
-  invoker errors surface in the message rather than killing the loop). Transport-free, pure.
+**Phase 5 — local-model backend complete (OpenHands V1-SDK runner wired); live GPU run deferred.**
 - ✅ **vLLM serving** (`vllm_serving.py`, §4.6): `VLLMServeConfig` + `build_serve_command` (base
   model, `--api-key`, `--enable-auto-tool-choice`/`--tool-call-parser`, dynamic LoRA via
   `--enable-lora --lora-modules` or a pre-merged model, `base_url`); `VLLMServer` launcher
@@ -950,15 +946,30 @@ importable and cross-platform.
 - ✅ **`LocalMutationBackend`** (`local_backend.py`, §4.6): implements the §4.2
   `MutationBackend.run` contract driving the population model as mutator via the **same**
   directive + `darwin-mcp` tools as the Claude backend (parity, §9.4), with a larger turn budget
-  (§4.6 capability floor). `build_harness_config` is pure/tested; the live OpenHands session is
-  behind an injectable `harness_runner` (deferred default raises with the live-path note).
-  Verified end-to-end through `run_mutation_window` with a fake harness (green path).
+  (§4.6 capability floor). The harness is **OpenHands** (the V1 `openhands-sdk`): `_run_openhands`
+  builds an Agent with terminal + file-editor tools (the local-model equivalent of Claude Code's
+  Bash/Edit/Write/Read built-ins) plus `darwin-mcp` via the SDK's native `mcp_config`, runs the
+  directive against the mounted genome, and a wall-clock watcher thread injects the soft nudge and
+  `pause()`s on the hard/kill deadline (the always-green finalize + recover-last-green is
+  `run_mutation_window`'s job, §9.3). Pure/tested surfaces: `build_harness_config`,
+  `build_llm_kwargs` (the `openai/<served-model>` + base_url litellm routing), and
+  `to_openhands_mcp_config` (our stdio config → OpenHands' `{"mcpServers": …}` shape); the live
+  session is behind an injectable `harness_runner` (default `_run_openhands`, deferred via the lazy
+  SDK import). Verified end-to-end through `run_mutation_window` with a fake harness (green path).
+  > **OpenHands chosen over a hand-rolled OpenAI-tool shim.** The §9.3 shim
+  > (`openai_tool_shim.py`) remains as the documented thin fallback, but the local mutator runs on
+  > OpenHands: its sandbox is redundant with DARWIN's per-model container (§8) and the capability it
+  > adds is the *forward-looking* fit — as the population scales params across generations, the
+  > mutator grows into OpenHands' planning/recovery/sub-agent suite rather than outgrowing a minimal
+  > loop. The trade-off accepted: we don't unit-verify the live SDK glue here (it's GPU/Linux-only).
 - ✅ **Backend factory** (`make_mutation_backend_factory`): routes `local` →
   `LocalMutationBackend` / else → `ClaudeMutationBackend`, ready to drop into
   `LocalGenerationOps`'s `mutation_backend_factory` seam (the controller already routes
-  `backend="local"`, §4.7). Optional `local` extra (vllm + openhands) added to `pyproject.toml`.
+  `backend="local"`, §4.7). The local path attaches the same `darwin-mcp` stdio server as the
+  Claude path (`entrypoint._default_backend_factory`). Optional `local` extra (vllm +
+  openhands-sdk/openhands-tools) in `pyproject.toml`, env-gated to Linux + Python ≥3.12.
 - ⏳ **Deferred (needs infra):** the *live* vLLM serve of a LoRA-merged model on a GPU + the
-  OpenHands harness session against it; validating multi-hour stability of a 32B model on the
+  OpenHands session against it; validating multi-hour stability of a 32B model on the
   harness (Appendix A open question).
 
 **Phase 6 — anti-gaming + diversity cores complete; live eval-data/GPU producers deferred.**
