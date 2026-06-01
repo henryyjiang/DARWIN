@@ -56,14 +56,23 @@ class RunPaths:
 
     @classmethod
     def from_dict(cls, root: Path, d: dict[str, Any]) -> "RunPaths":
-        root = Path(root)
-        g = lambda k, default: Path(d.get(k, root / default))  # noqa: E731
+        # Resolve every path to ABSOLUTE (relative entries are taken relative to the config-file
+        # dir). Container mode bind-mounts these into Docker, and `docker -v` requires an absolute
+        # host path — a relative one is read as a *named volume* (e.g. `models\s0` →
+        # "invalid characters for a local volume name"). Absolute paths also make the run
+        # independent of the process working directory.
+        root = Path(root).resolve()
+
+        def g(key: str, default: str) -> Path:
+            raw = Path(d[key]) if key in d else Path(default)
+            return raw if raw.is_absolute() else (root / raw).resolve()
+
         return cls(
             root=root,
             workspace=g("workspace", "models"),
             runs=g("runs", "runs"),
             memory=g("memory", "memory"),
-            base_genome=Path(d["base_genome"]) if "base_genome" in d else root / "base_genome",
+            base_genome=g("base_genome", "base_genome"),
             cost_ledger=g("cost_ledger", "runs/cost.jsonl"),
             eval_slices=g("eval_slices", "eval_slices"),
         )
@@ -77,10 +86,23 @@ class RunSpec:
     paths: RunPaths
     generations: int = 1
     mode: str = "local"  # "local" (in-process) | "container" (run stages in the §8.5 images)
+    # "" (live defaults) | "test" (the budget-free mock profile, TEST_RUN_PLAN): mock global
+    # synthesizer by default, and the loop is wired to the mock entrypoints via images/commands.
+    profile: str = ""
     smoke_command: list[str] = field(default_factory=list)
     finetune_command: list[str] = field(default_factory=list)
     benchmark_command: list[str] = field(default_factory=list)
     seed_scores: dict[str, dict[str, float]] = field(default_factory=dict)
+    # Per-role container images (container mode). Defaults are the three §8.5 images; the test
+    # profile points all three at the one slim `darwin-agent` image (TEST_RUN_PLAN §3.5/§4).
+    images: dict[str, str] = field(default_factory=dict)
+    # Agent network policy for container mode (§8.3): "whitelist" (default) | "open" (dev-only).
+    agent_network: str = "whitelist"
+    # Opt-in: run the *real* Claude global-memory pass (capped) instead of the mock synthesizer,
+    # when a profile would otherwise mock it and an ANTHROPIC_API_KEY is present (TEST_RUN_PLAN §3.4).
+    real_global_memory: bool = False
+    global_memory_model: str = ""  # override the global-pass model (e.g. a cheaper one for testing)
+    global_memory_effort: str = ""  # override the global-pass effort ("low"/"medium"/"high")
 
 
 def apply_overrides(config: DarwinConfig, overrides: dict[str, Any]) -> DarwinConfig:
@@ -104,15 +126,24 @@ def load_run_spec(path: Path | str) -> RunSpec:
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     config = apply_overrides(DarwinConfig(), data.get("config", {}))
     paths = RunPaths.from_dict(path.parent, data.get("paths", {}))
+    commands = data.get("commands", {}) or {}
     return RunSpec(
         config=config,
         paths=paths,
         generations=int(data.get("generations", 1)),
         mode=str(data.get("mode", "local")),
+        profile=str(data.get("profile", "")),
+        # `commands.finetune`/`commands.benchmark` are aliases for the top-level *_command keys;
+        # the test profile's YAML uses the `commands:` block (TEST_RUN_PLAN §4).
         smoke_command=list(data.get("smoke_command", [])),
-        finetune_command=list(data.get("finetune_command", [])),
-        benchmark_command=list(data.get("benchmark_command", [])),
+        finetune_command=list(commands.get("finetune", data.get("finetune_command", []))),
+        benchmark_command=list(commands.get("benchmark", data.get("benchmark_command", []))),
         seed_scores=dict(data.get("seed_scores", {})),
+        images=dict(data.get("images", {})),
+        agent_network=str(data.get("agent_network", "whitelist")),
+        real_global_memory=bool(data.get("real_global_memory", False)),
+        global_memory_model=str(data.get("global_memory_model", "")),
+        global_memory_effort=str(data.get("global_memory_effort", "")),
     )
 
 
@@ -155,7 +186,12 @@ def build_controller(
     images via `ContainerGenerationOps` + the container backends (a real Docker host is needed
     at run time, but the assembly is identical and testable).
     """
-    store = MemoryStore(spec.paths.memory)
+    # The MemoryStore is rooted at the RUN ROOT, not the `memory/` dir: it derives the per-model
+    # notebooks at `<root>/models/<model>/memory/iter_<n>.md` (co-located with the population
+    # genomes under `models/`) and global memory at `<root>/memory/global/` (ARCHITECTURE §7.2/§7.3
+    # — both repo-top-level). Passing `paths.memory` here would double it to `memory/memory/global`
+    # and orphan the seeded global templates the run is meant to read.
+    store = MemoryStore(spec.paths.root)
     ledger = CostLedger(spec.paths.cost_ledger)
     if spec.mode == "container":
         ops = _build_container_ops(
@@ -212,21 +248,79 @@ def _build_container_ops(
     agent_env = {
         k: os.environ[k] for k in ("ANTHROPIC_API_KEY",) if os.environ.get(k)
     }
+    # Per-role images (TEST_RUN_PLAN §3.5): default to the three §8.5 images; the test profile
+    # points all three at the one slim darwin-agent image and overrides finetune/eval commands
+    # with the mock entrypoints.
+    images = spec.images
+    agent_image = images.get("agent", "darwin-agent")
+    finetune_image = images.get("finetune", "darwin-finetune")
+    eval_image = images.get("eval", "darwin-eval")
+
+    ft_backend = finetune_backend or ContainerFinetuneBackend(
+        runner=runner,
+        base_model=resolved_base,
+        image=finetune_image,
+        command=list(spec.finetune_command),  # [] => the image CMD (reference entrypoint)
+    )
+    ev_backend = benchmark_backend or EvalContainerBenchmarkBackend(
+        runner=runner,
+        image=eval_image,
+        command=list(spec.benchmark_command),  # [] => the image CMD (reference entrypoint)
+    )
+
+    # In the test profile the eval slice dirs are synthetic (the mock eval ignores their contents,
+    # TEST_RUN_PLAN §4); auto-create them so the run is self-contained. Real runs ship real slices.
     slices_root = spec.paths.eval_slices
+
+    def slice_dir(sid: int) -> Path:
+        d = slices_root / str(sid)
+        if spec.profile == "test":
+            d.mkdir(parents=True, exist_ok=True)
+        return d
+
     return ContainerGenerationOps(
         config=spec.config,
         store=store,
         ledger=ledger,
         workspace=spec.paths.workspace,
-        finetune_backend=finetune_backend
-        or ContainerFinetuneBackend(runner=runner, base_model=resolved_base),
-        benchmark_backend=benchmark_backend or EvalContainerBenchmarkBackend(runner=runner),
+        finetune_backend=ft_backend,
+        benchmark_backend=ev_backend,
         smoke_command=spec.smoke_command or ["python", "smoke_test.py"],
         container_runner=runner,
+        agent_image=agent_image,
+        agent_network=spec.agent_network,
         base_model=resolved_base,
         agent_env=agent_env,
-        eval_slice_dir=lambda sid: slices_root / str(sid),
+        eval_slice_dir=slice_dir,
     )
+
+
+def build_synthesizer(spec: RunSpec):
+    """Pick the global-memory synthesizer for a run (TEST_RUN_PLAN §3.4).
+
+    Live runs use `ClaudeSynthesizer` (the §7.4 default). The `test` profile uses the offline
+    `MockSynthesizer` unless the operator opts into the real pass (`real_global_memory: true`) and
+    an `ANTHROPIC_API_KEY` is present — in which case the real pass runs under a wall-clock cap
+    (`CappedSynthesizer`) so the budget-free smoke test can never stall on it.
+    """
+    import os
+
+    if spec.profile == "test":
+        if spec.real_global_memory and os.environ.get("ANTHROPIC_API_KEY"):
+            from darwin.global_memory import CappedSynthesizer, ClaudeSynthesizer
+            from darwin.global_memory.synthesizer import DEFAULT_EFFORT, MODEL
+
+            inner = ClaudeSynthesizer(
+                model=spec.global_memory_model or MODEL,
+                effort=spec.global_memory_effort or DEFAULT_EFFORT,
+            )
+            return CappedSynthesizer(inner, timeout_s=300.0)
+        from darwin.global_memory import MockSynthesizer
+
+        return MockSynthesizer()
+    from darwin.global_memory import ClaudeSynthesizer
+
+    return ClaudeSynthesizer()
 
 
 def _default_mutation_factory(spec: RunSpec):
@@ -254,12 +348,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.generations is not None:
         spec.generations = args.generations
 
-    from darwin.global_memory import ClaudeSynthesizer
-
     controller, _store, _ledger = build_controller(
         spec,
         mutation_backend_factory=_default_mutation_factory(spec),
-        synthesizer=ClaudeSynthesizer(),
+        synthesizer=build_synthesizer(spec),
     )
     population = bootstrap_or_load_population(spec)
     print(f"[darwin] running {spec.generations} generation(s) from {len(population.models)} models")

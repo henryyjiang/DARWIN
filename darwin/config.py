@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, asdict
 from typing import Literal
 
-Backend = Literal["claude", "local", "mixed"]
+Backend = Literal["claude", "local", "mixed", "mock"]
 FinetuneMethod = Literal["qlora_4bit", "lora", "full"]
 
 
@@ -32,6 +32,18 @@ class MutationConfig:
     mutation_window_h: float = 3.0  # within the 2-4 h range
     soft_deadline_min: int = 15  # T-minus this many minutes: wrap-up nudge
     kill_grace_min: int = 5  # after hard deadline before force-stop
+    # Test-profile knob (TEST_RUN_PLAN §3.5): N offspring per generation use the *real* Claude
+    # mutator while the rest use `backend` (e.g. `mock`), so the SDK path can be validated while
+    # capping API spend. 0 => every offspring uses `backend`.
+    claude_sample: int = 0
+    # Mutation directive style for the Claude/local agent: "full" = the real param-scaling mission
+    # (§4.1); "small" = make one small, safe green code change (for validating the SDK path on a
+    # trivial test genome without the agent attempting a full architecture redesign).
+    directive_style: str = "full"
+    # Claude Agent SDK session knobs (real-Claude path). Empty/0 => the SDK/CLI default.
+    claude_model: str = ""  # e.g. a faster/cheaper model for the test; "" => account default
+    claude_effort: str = ""  # "low"|"medium"|"high"|... ; "" => SDK default
+    claude_max_budget_usd: float = 0.0  # hard per-session USD cap (SDK max_budget_usd); 0 => none
 
 
 @dataclass
